@@ -383,29 +383,6 @@
                 },
                 "conditions": [
                   {
-                    "id": "83745234-3c2e-4bea-8925-592ca7af1a78",
-                    "leftValue": "",
-                    "rightValue": "",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals",
-                      "name": "filter.operator.equals"
-                    }
-                  }
-                ],
-                "combinator": "and"
-              }
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "strict",
-                  "version": 2
-                },
-                "conditions": [
-                  {
                     "leftValue": "={{$node[\"Normalize\"].json.text}}",
                     "rightValue": "presu_",
                     "operator": {
@@ -503,7 +480,9 @@
             }
           ]
         },
-        "options": {}
+        "options": {
+          "fallbackOutput": true
+        }
       },
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
@@ -3264,6 +3243,91 @@
       ],
       "id": "517b593f-3bb6-47dc-b531-5386c7bca477",
       "name": "End (await any)"
+    },
+    {
+      "parameters": {
+        "jsCode": "const now = new Date().toISOString();\nreturn items.map(item => {\n  const json = item.json || {};\n  const text = typeof json.text === 'string' ? json.text : '';\n  const chatId = json.chat_id ?? null;\n  console.warn(`[menu_fallback] chat ${chatId ?? 'unknown'} text: ${text}`);\n  return {\n    json: {\n      ...json,\n      menu_fallback: {\n        handledAt: now,\n        originalText: text,\n        isCallback: json.isCallback ?? false,\n      },\n    },\n    binary: item.binary,\n  };\n});"
+      },
+      "id": "bd393208-4a3c-45d7-89cb-f249eb8c63a1",
+      "name": "Log Menu Fallback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -952,
+        -472
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "text": "=*Ups* 😅 No pude identificar tu selección.\nTe muestro el menú principal para que elijas otra opción.",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "Buscar inmuebles",
+                    "additionalFields": {
+                      "callback_data": "menu_buscar"
+                    }
+                  },
+                  {
+                    "text": "Próximas subastas",
+                    "additionalFields": {
+                      "callback_data": "menu_proximas"
+                    }
+                  },
+                  {
+                    "text": "Avaluo en linea",
+                    "additionalFields": {
+                      "url": "https://www.inmobo.co/certificado-de-precios-de-escrituras?tipo=avaluoCierres&cupon=d3331905-137f-4103-ac06-bec3d87afa96"
+                    }
+                  },
+                  {
+                    "text": "Vender",
+                    "additionalFields": {
+                      "url": "https://dorotea.co/organizacion/como-vender"
+                    }
+                  },
+                  {
+                    "text": "FAQ",
+                    "additionalFields": {
+                      "url": "https://dorotea.co/centro-ayuda/categoria/5"
+                    }
+                  },
+                  {
+                    "text": "Quienes somos",
+                    "additionalFields": {
+                      "url": "https://dorotea.co/organizacion/quienes-somos"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "1f4cbb4e-39a9-4ae7-b9df-c433db12c7c4",
+      "name": "Send Menu (fallback)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -704,
+        -472
+      ],
+      "webhookId": "a9f4873b-b05b-47ee-8489-c028df8a2b2f",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
     }
   ],
   "pinData": {},
@@ -3437,7 +3501,6 @@
             "index": 0
           }
         ],
-        [],
         [
           {
             "node": "Clear await_budget",
@@ -3469,6 +3532,13 @@
         [
           {
             "node": "Parse Rooms",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Menu Fallback",
             "type": "main",
             "index": 0
           }
@@ -4318,6 +4388,17 @@
         [
           {
             "node": "Edit Ask Bedrooms",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Menu Fallback": {
+      "main": [
+        [
+          {
+            "node": "Send Menu (fallback)",
             "type": "main",
             "index": 0
           }
