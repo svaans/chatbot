@@ -2116,6 +2116,28 @@
                 ],
                 "combinator": "and"
               }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$node[\"Parse Budget Selection\"].json.route}}",
+                    "rightValue": "ok",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "r4"
+                  }
+                ],
+                "combinator": "and"
+              }
             }
           ]
         },
@@ -2129,6 +2151,42 @@
       ],
       "id": "3bb90ef2-13ea-4507-ab4a-f7f443b8de16",
       "name": "Route After Budget"
+    },
+    {
+      "parameters": {
+        "jsCode": "const sel = $node[\"Parse Budget Selection\"].json || {};\nfunction toPrice(value, { allowZeroUpper = false } = {}) {\n  if (value === null || value === undefined) return null;\n  const num = Number(value);\n  if (!Number.isFinite(num)) return null;\n  if (num <= 0) {\n    if (num === 0 && !allowZeroUpper) return 0;\n    return null;\n  }\n  return Math.round(num * 1_000_000);\n}\nconst precio_min = toPrice(sel.min);\nconst precio_max = toPrice(sel.max, { allowZeroUpper: true });\nreturn [{ json: { ...sel, precio_min, precio_max } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -304,
+        1200
+      ],
+      "id": "7f2e086f-8b6a-4a43-a1ff-83650af0f5b2",
+      "name": "Build Budget Payload (selection)"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM public.event_log\nWHERE lead_id = (SELECT id FROM public.leads WHERE chat_id=$1 AND canal='telegram')\n  AND evento = 'await_budget';\n",
+        "options": {
+          "queryReplacement": "[ $node[\"Normalize\"].json.chat_id ]"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -80,
+        1200
+      ],
+      "id": "8d4051a8-64d3-4efb-920d-3c8fe5280660",
+      "name": "Clear await_budget (selection)",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
     },
     {
       "parameters": {
@@ -4027,6 +4085,27 @@
         ]
       ]
     },
+    "Build Budget Payload (selection)": {
+      "main": [
+        [
+          {
+            "node": "Log selected_budget",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "query top5 (presu)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Clear await_budget (selection)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Route After Budget": {
       "main": [
         [
@@ -4046,6 +4125,13 @@
         [
           {
             "node": "IF edit_or_send (Menu)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Budget Payload (selection)",
             "type": "main",
             "index": 0
           }
