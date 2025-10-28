@@ -1855,6 +1855,27 @@
     },
     {
       "parameters": {
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "text": "=⏳ Estoy procesando tu solicitud, dame unos segundos..."
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -2864,
+        872
+      ],
+      "id": "4f58aa5e-eeb8-4c85-b083-a7fbfc27a32e",
+      "name": "Send Throttle Notice",
+      "webhookId": "8d3740ad-2082-42ec-be1d-5e3090775515",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
         "jsCode": "// BuildBudgetKeyboard (tolerant)\n// - If budget_id present -> build action buttons bud:<id36>:<action>\n// - Else -> build preset budget range buttons budget:<code>\nfunction toBase36Id(x) {\n  const s = String(x ?? \"\").trim();\n  const n = Number(s);\n  if (Number.isInteger(n) && n >= 0) return n.toString(36);\n  let acc = 0;\n  for (let i = 0; i < s.length; i++) acc = ((acc << 5) - acc) + s.charCodeAt(i);\n  acc = Math.abs(acc) >>> 0;\n  return acc.toString(36);\n}\nconst j = (items[0] && items[0].json) ? items[0].json : {};\nconst hasBudgetId = j.budget_id != null || j.presupuesto_id != null || j.id != null;\n\nlet reply_markup;\nif (hasBudgetId) {\n  const budgetId = j.budget_id ?? j.presupuesto_id ?? j.id;\n  const allowed = [\"view\",\"pdf\",\"accept\",\"reject\"];\n  let actions = Array.isArray(j.actions) && j.actions.length ? j.actions : allowed;\n  actions = actions.filter(a => allowed.includes(a));\n  const id36 = toBase36Id(budgetId);\n  const rows = [];\n  function label(a){ return a===\"view\"?\"Ver\":a===\"pdf\"?\"PDF\":a===\"accept\"?\"Aceptar\":a===\"reject\"?\"Rechazar\":a; }\n  for (let k = 0; k < actions.length; k += 2) {\n    const row = [];\n    for (let h = k; h < Math.min(k+2, actions.length); h++) {\n      const act = actions[h];\n      row.push({ text: label(act), callback_data: `bud:${id36}:${act}` });\n    }\n    rows.push(row);\n  }\n  reply_markup = { inline_keyboard: rows };\n  return [{ json: { ...j, reply_markup, keyboard_built: true, budget_id_base36: id36, budget_id_raw: budgetId } }];\n}\n\n// No budget_id: build preset BUDGET RANGE keyboard\nconst ranges = j.budget_ranges && Array.isArray(j.budget_ranges) ? j.budget_ranges : [\n  {label:\"0 - 200M\", code:\"r:0-200\"},\n  {label:\"200 - 400M\", code:\"r:200-400\"},\n  {label:\"400 - 600M\", code:\"r:400-600\"},\n  {label:\"Otro presupuesto\", code:\"other\"},\n  {label:\"Cambiar ciudad\", code:\"change_city\"},\n  {label:\"Inicio\", code:\"home\"}\n];\nconst rows = [];\nfor (let i=0; i<ranges.length; i+=3) { // up to 3 per row for compact view\n  const row = [];\n  for (let k=i; k<Math.min(i+3, ranges.length); k++) {\n    const r = ranges[k];\n    // callback_data canonical: budget:<code>, keep it <=64 bytes\n    row.push({ text: r.label, callback_data: `budget:${r.code}` });\n  }\n  rows.push(row);\n}\nreply_markup = { inline_keyboard: rows };\nreturn [{ json: { ...j, reply_markup, keyboard_built: true } }];\n"
       },
       "id": "fa4eabd6-1145-43f1-a99b-ca9d923a6117",
@@ -2269,40 +2290,6 @@
     },
     {
       "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "strict",
-            "version": 2
-          },
-          "conditions": [
-            {
-              "id": "throttled-true",
-              "leftValue": "={{$json.throttled === true}}",
-              "rightValue": "",
-              "operator": {
-                "type": "boolean",
-                "operation": "true",
-                "singleValue": true
-              }
-            }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
-      },
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [
-        -3344,
-        304
-      ],
-      "id": "d66cf657-b982-4a42-8e75-c028b194d65c",
-      "name": "IF Throttled"
-    },
-    {
-      "parameters": {
         "resource": "callback",
         "queryId": "$json.callback_query_id",
         "additionalFields": {
@@ -2325,40 +2312,6 @@
           "name": "Telegram account"
         }
       }
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "strict",
-            "version": 2
-          },
-          "conditions": [
-            {
-              "id": "is-callback-true",
-              "leftValue": "={{$json.isCallback === true}}",
-              "rightValue": "",
-              "operator": {
-                "type": "boolean",
-                "operation": "true",
-                "singleValue": true
-              }
-            }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
-      },
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [
-        -3120,
-        304
-      ],
-      "id": "b85c5b02-32f5-4644-975e-e80fa6d78606",
-      "name": "IF Throttled isCallback?"
     },
     {
       "parameters": {
@@ -3430,11 +3383,6 @@
             "node": "IF throttled?",
             "type": "main",
             "index": 0
-          },
-          {
-            "node": "IF Throttled",
-            "type": "main",
-            "index": 0
           }
         ]
       ]
@@ -4138,28 +4086,6 @@
         ]
       ]
     },
-    "IF Throttled": {
-      "main": [
-        [
-          {
-            "node": "IF Throttled isCallback?",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "IF Throttled isCallback?": {
-      "main": [
-        [
-          {
-            "node": "AnswerCallback (⏳)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Parse Presupuesto": {
       "main": [
         [
@@ -4485,6 +4411,24 @@
         [
           {
             "node": "Send Menu (fallback)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF isCallback (throttle)": {
+      "main": [
+        [
+          {
+            "node": "AnswerCallback (⏳)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Throttle Notice",
             "type": "main",
             "index": 0
           }
