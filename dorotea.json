@@ -1,0 +1,4339 @@
+{
+  "name": "dorotea_bot",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message",
+          "callback_query"
+        ],
+        "additionalFields": {}
+      },
+      "id": "33160bdd-2e55-41db-b01f-34a20283a4d6",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1,
+      "position": [
+        -4240,
+        568
+      ],
+      "webhookId": "9e82dbd7-6b57-4365-a317-66f4c781d884",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normaliza message y callback_query, y prepara edición de mensajes.\nconst u = items[0].json;\nconst isCallback = !!u.callback_query;\nconst m = isCallback ? u.callback_query.message : u.message;\nconst chat = m?.chat || {};\nconst chatId = chat.id ? String(chat.id) : null;\n\nif (!chatId) {\n  return [{ json: { error: 'missing_chat_id', raw: u } }];\n}\n\nconst text = isCallback ? (u?.callback_query?.data || \"\") : (m?.text || \"\");\nconst messageId = m?.message_id ? String(m.message_id) : null;\nconst callbackQueryId = isCallback ? (u?.callback_query?.id || null) : null;\nconst isPrivate = (chat?.type === 'private');\n\n// session_id simple por día (trazabilidad)\nconst d = new Date();\nconst ymd = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;\nconst session_id = `${chatId}-${ymd}`;\n\nreturn [{\n  json: {\n    isCallback,\n    isPrivate,\n    text,\n    chat_id: chatId,\n    first_name: chat.first_name || \"\",\n    username: chat.username || \"\",\n    message_id: messageId,             // para Edit Message\n    callback_query_id: callbackQueryId,// para AnswerCallbackQuery\n    update_id: u.update_id || null,\n    session_id,\n    raw: u\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4016,
+        568
+      ],
+      "id": "1ffa2474-a4ee-4603-af1c-c90873de5a1b",
+      "name": "Normalize"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT extract(epoch from max(created_at)) * 1000 AS last_ts\nFROM public.event_log\nWHERE lead_id = (SELECT id FROM public.leads WHERE chat_id = $1 AND canal='telegram')",
+        "options": {
+          "queryReplacement": "[ $json.chat_id ]"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -3792,
+        568
+      ],
+      "id": "494abb22-1482-431e-ab5a-ab6aaccc7ec6",
+      "name": "Check Last Event",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const base = items[0]?.json ?? {};\nconst last = Number(base.last_ts) || 0;\nconst now = Date.now();\nconst minGapMs = 1500;\nconst throttled = (now - last) < minGapMs;\nreturn [{\n  json: {\n    ...base,\n    throttled,\n    throttle_gap_ms: now - last,\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3568,
+        568
+      ],
+      "id": "e5fd7c34-b1b4-4e75-9ffa-869fedc03d27",
+      "name": "Throttle"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "660ffc7c-8ae4-4a20-b969-9cdbda7a1669",
+              "leftValue": "={{$json.isCallback === true}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -3120,
+        568
+      ],
+      "id": "80fdad22-467f-41a1-9ef6-32aaf18fe185",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "resource": "callback",
+        "queryId": "$json.callback_query_id",
+        "additionalFields": {
+          "show_alert": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -2896,
+        496
+      ],
+      "id": "ed8817cf-af9c-4667-941e-110e3fdbced2",
+      "name": "AnswerCallback",
+      "webhookId": "8f4fc68a-6a0e-4d7c-a4ba-af3dfe57cf1a",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO public.leads (chat_id, canal, username, nombre, estado)\nVALUES ($1, 'telegram', $2, $3, 'activo')\nON CONFLICT (canal, chat_id)\nDO UPDATE SET\n  username   = EXCLUDED.username,\n  nombre     = EXCLUDED.nombre,\n  updated_at = now()\nRETURNING id;",
+        "options": {
+          "queryReplacement": "[\n  $json.chat_id,\n  $json.username || null,\n  $json.first_name || null\n]\n"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -2672,
+        568
+      ],
+      "id": "2f2c1494-ce87-4381-a520-45c61429844f",
+      "name": "Upsert Lead",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO public.event_log (lead_id, evento, payload)\nVALUES ($1::uuid, $2::text, NULL);",
+        "options": {
+          "queryReplacement": "={{$json.id}}, {{$node[\"Normalize\"].json.isCallback ? 'menu_click' : 'telegram_in'}}, {{null}}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -2448,
+        568
+      ],
+      "id": "3e1cc177-b188-4fa7-9808-06c7b105a1ca",
+      "name": "Log Event",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "04b359df-a7c0-4ae8-8f5b-c93b635c09a4",
+              "leftValue": "={{$node[\"Normalize\"].json.isCallback === true}}",
+              "rightValue": "=menu_",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1424,
+        1656
+      ],
+      "id": "c3b67625-f893-4452-b79a-9724c2eeb196",
+      "name": "IF menu_*"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$node[\"Normalize\"].json.text}}",
+                    "rightValue": "menu_inicio",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "62b5032b-f9ea-4b55-be6d-942fa9712714"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "290c5231-f077-4fc5-81da-71a1e51814f5",
+                    "leftValue": "={{$node[\"Normalize\"].json.text}}",
+                    "rightValue": "menu_proximas",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "8b67201b-3f25-484e-8663-318ac767c822",
+                    "leftValue": "={{$node[\"Normalize\"].json.text}}",
+                    "rightValue": "menu_detalle_",
+                    "operator": {
+                      "type": "string",
+                      "operation": "startsWith"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "138bb19c-04e3-40a8-b206-aa308ef9482f",
+                    "leftValue": "={{$node[\"Normalize\"].json.text}}",
+                    "rightValue": "menu_buscar",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "cf7b55eb-912a-4dba-bc1b-8a8b2a2d3018",
+                    "leftValue": "={{$node[\"Normalize\"].json.text}}",
+                    "rightValue": "buscar_tipo_",
+                    "operator": {
+                      "type": "string",
+                      "operation": "startsWith"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "30756dd7-7d9a-4ccb-b55f-694b78ba4096",
+                    "leftValue": "={{$node[\"Normalize\"].json.text}}",
+                    "rightValue": "buscar_ciudad",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$node[\"Normalize\"].json.text}}",
+                    "rightValue": "budget:",
+                    "operator": {
+                      "type": "string",
+                      "operation": "startsWith"
+                    },
+                    "id": "a5c6de3c-6c0a-4e0b-a9a1-bc1d0d0b9999"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "83745234-3c2e-4bea-8925-592ca7af1a78",
+                    "leftValue": "",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$node[\"Normalize\"].json.text}}",
+                    "rightValue": "presu_",
+                    "operator": {
+                      "type": "string",
+                      "operation": "startsWith"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$node[\"Normalize\"].json.text}}",
+                    "rightValue": "menu_seguir_",
+                    "operator": {
+                      "type": "string",
+                      "operation": "startsWith"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$node[\"Normalize\"].json.text}}",
+                    "rightValue": "menu_asesor",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$node[\"Normalize\"].json.text}}",
+                    "rightValue": "asesor_",
+                    "operator": {
+                      "type": "string",
+                      "operation": "startsWith"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$node[\"Normalize\"].json.text}}",
+                    "rightValue": "rooms_",
+                    "operator": {
+                      "type": "string",
+                      "operation": "startsWith"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        -1200,
+        -472
+      ],
+      "id": "a3cd6226-17f3-4201-9320-0028b62082bc",
+      "name": "Switch menu"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "3eac12dc-8703-4740-90a1-f998162c2462",
+              "leftValue": "={{$json.isCallback === true}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -304,
+        -1808
+      ],
+      "id": "9cb49b07-20b4-46b7-b90b-4723237330bc",
+      "name": "IF edit_or_send (Menu)"
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "text": "=*¡Hola {{ $node[\"Normalize\"].json.first_name || '' }}!* 👋\nSoy *Dorotea*, tu asistente de subastas inmobiliarias.\n_Oportunidades que conectan contigo._ \n",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "Buscar inmuebles",
+                    "additionalFields": {
+                      "callback_data": "menu_buscar"
+                    }
+                  },
+                  {
+                    "text": "Próximas subastas",
+                    "additionalFields": {
+                      "callback_data": "menu_proximas"
+                    }
+                  },
+                  {
+                    "text": "Avaluo en linea",
+                    "additionalFields": {
+                      "url": "https://www.inmobo.co/certificado-de-precios-de-escrituras?tipo=avaluoCierres&cupon=d3331905-137f-4103-ac06-bec3d87afa96"
+                    }
+                  },
+                  {
+                    "text": "Vender",
+                    "additionalFields": {
+                      "url": "https://dorotea.co/organizacion/como-vender"
+                    }
+                  },
+                  {
+                    "text": "FAQ",
+                    "additionalFields": {
+                      "url": "https://dorotea.co/centro-ayuda/categoria/5"
+                    }
+                  },
+                  {
+                    "text": "Quienes somos",
+                    "additionalFields": {
+                      "url": "https://dorotea.co/organizacion/quienes-somos"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "Markdown"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        144,
+        -1712
+      ],
+      "id": "d3588988-9e7c-4389-a704-b3251d3a6676",
+      "name": "Send Menu",
+      "webhookId": "093e99a9-ddb4-4c72-8af3-f831d58f132d",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "editMessageText",
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "messageId": "={{$node[\"Normalize\"].json.message_id}}",
+        "replyMarkup": "inlineKeyboard",
+        "text": "=*¡Hola {{ $json.first_name || '' }}!* 👋 Soy *Dorotea*, tu asistente virtual de subastas inmobiliarias.",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "Buscar inmuebles",
+                    "additionalFields": {
+                      "callback_data": "menu_buscar"
+                    }
+                  },
+                  {
+                    "text": "Próximas subastas",
+                    "additionalFields": {
+                      "callback_data": "menu_proximas"
+                    }
+                  },
+                  {
+                    "text": "Avaluo en linea",
+                    "additionalFields": {
+                      "url": "https://www.inmobo.co/certificado-de-precios-de-escrituras?tipo=avaluoCierres&cupon=d3331905-137f-4103-ac06-bec3d87afa96"
+                    }
+                  },
+                  {
+                    "text": "Vender",
+                    "additionalFields": {
+                      "url": "https://dorotea.co/organizacion/como-vender"
+                    }
+                  },
+                  {
+                    "text": "FAQ",
+                    "additionalFields": {
+                      "url": "https://dorotea.co/centro-ayuda/categoria/5"
+                    }
+                  },
+                  {
+                    "text": "Quienes somos",
+                    "additionalFields": {
+                      "url": "https://dorotea.co/organizacion/quienes-somos"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        144,
+        -1904
+      ],
+      "id": "83ae8daa-9ae2-434c-87e3-e99dd52f40f2",
+      "name": "Edit Menu",
+      "webhookId": "991f12d1-b098-4b33-9592-4af4b26ac7af",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT property_id, titulo, ciudad, precio_actual, status_txt, fecha_fin\nFROM public.properties_view\nWHERE status_txt = 'activa'\nORDER BY fecha_fin ASC NULLS LAST, updated_at DESC\nLIMIT 5;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -80,
+        -1520
+      ],
+      "id": "2e04c93f-5f0e-4742-81c1-b3d189fc09b0",
+      "name": "query top5",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Cada fila llega como un item (Split Into Items = ON)\nconst rows = items.map(i => i.json);\n\n// Construir inline_keyboard: una fila = un botón con callback_data\nconst inline_keyboard = rows.map(r => [{\n  text: `🔹 ${r.titulo} — ${r.ciudad} — $${r.precio_actual}`,\n  callback_data: `menu_detalle_${r.property_id}`\n}]);\n\n// Si no hay resultados, agrega 1 botón a Inicio\nif (!inline_keyboard.length) {\n  inline_keyboard.push([{ text: 'Sin resultados', callback_data: 'menu_inicio' }]);\n}\n\n// Rellenar hasta 5 filas para que el nodo Telegram tenga índices válidos\nwhile (inline_keyboard.length < 5) {\n  inline_keyboard.push([{ text: '⬅️ Volver', callback_data: 'menu_inicio' }]);\n}\n\n// Devolver UN item con los 5 botones listos\nreturn [{ json: { replyMarkup: { inline_keyboard } } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        592,
+        -496
+      ],
+      "id": "dfd51ba1-fc1d-4453-b88e-9af1651f156e",
+      "name": "Build Keyboard Top5"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c4ef91fc-7f57-4fbd-82ad-8119de4ff6be",
+              "leftValue": "={{$node[\"Normalize\"].json.isCallback === true}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        816,
+        -496
+      ],
+      "id": "a20b51cd-183a-4fc2-b5ec-9fd4ba2093a9",
+      "name": "IF  edit _or_send (top5)"
+    },
+    {
+      "parameters": {
+        "operation": "editMessageText",
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "messageId": "={{$node[\"Normalize\"].json.message_id}}",
+        "replyMarkup": "inlineKeyboard",
+        "text": "=*Próximas subastas (Top 5):*",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "={{ $json.replyMarkup.inline_keyboard[0][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{$json.replyMarkup.inline_keyboard[0][0].callback_data}}"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "={{ $json.replyMarkup.inline_keyboard[1][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{$json.replyMarkup.inline_keyboard[1][0].callback_data}}"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "={{ $json.replyMarkup.inline_keyboard[2][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{$json.replyMarkup.inline_keyboard[2][0].callback_data}}"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "={{ $json.replyMarkup.inline_keyboard[3][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{$json.replyMarkup.inline_keyboard[3][0].callback_data}}"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "={{ $json.replyMarkup.inline_keyboard[4][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{$json.replyMarkup.inline_keyboard[4][0].callback_data}}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1264,
+        -496
+      ],
+      "id": "2271ea3a-e049-4fd0-a78b-cf2a5b7b91f0",
+      "name": "Edit top5",
+      "webhookId": "d6b1e25f-511e-460e-b736-75cd266309a2",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "text": "*Próximas subastas (Top 5):*",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "={{ $('Build Keyboard Top5').item.json.replyMarkup.inline_keyboard[0][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{ $('Build Keyboard Top5').item.json.replyMarkup.inline_keyboard[0][0].callback_data }}"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "={{ $('Build Keyboard Top5').item.json.replyMarkup.inline_keyboard[1][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{ $('Build Keyboard Top5').item.json.replyMarkup.inline_keyboard[1][0].callback_data }}"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "={{ $('Build Keyboard Top5').item.json.replyMarkup.inline_keyboard[2][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{ $('Build Keyboard Top5').item.json.replyMarkup.inline_keyboard[2][0].callback_data }}"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "={{ $('Build Keyboard Top5').item.json.replyMarkup.inline_keyboard[3][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{ $('Build Keyboard Top5').item.json.replyMarkup.inline_keyboard[3][0].callback_data }}"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "={{ $('Build Keyboard Top5').item.json.replyMarkup.inline_keyboard[4][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{ $('Build Keyboard Top5').item.json.replyMarkup.inline_keyboard[4][0].callback_data }}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1264,
+        -304
+      ],
+      "id": "ab7fab3e-9944-41e0-9ddd-b8d3e7c90132",
+      "name": "send top5",
+      "webhookId": "bab0220c-8273-4824-a313-e3af333a5996",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH sel AS (\n  SELECT replace($1::text, 'menu_detalle_', '') AS pid\n)\nSELECT pv.property_id, pv.titulo, pv.ciudad, pv.direccion,\n       pv.precio_actual, pv.status_txt, pv.fecha_fin,\n       pv.media_url, pv.google_maps_link,\n       COALESCE(\n         jsonb_object_agg(pa.clave, pa.valor)\n         FILTER (WHERE pa.clave IS NOT NULL), '{}'::jsonb\n       ) AS attrs\nFROM public.properties_view pv\nLEFT JOIN public.property_attrs pa ON pa.property_id = pv.property_id\nWHERE pv.property_id::text = (SELECT pid FROM sel)\nGROUP BY pv.property_id, pv.titulo, pv.ciudad, pv.direccion,\n         pv.precio_actual, pv.status_txt, pv.fecha_fin,\n         pv.media_url, pv.google_maps_link;",
+        "options": {
+          "queryReplacement": "={{$node[\"Normalize\"].json.text}}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -976,
+        -1232
+      ],
+      "id": "1e0cfeb9-9308-4b97-947e-c4d1dd153a75",
+      "name": "Query Detalle",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = items[0]?.json || {};\nconst a = r.attrs || {};\n\nconst hab = a.habitaciones ? `\\n• Habitaciones: ${a.habitaciones}` : '';\nconst ban = a.banos ? `\\n• Baños: ${a.banos}` : '';\nconst area = a.area_m2 ? `\\n• Área: ${a.area_m2} m²` : '';\nconst cierre = r.fecha_fin ? `\\n📅 Cierre: ${r.fecha_fin}` : '';\nconst foto = r.media_url ? `\\n\\n${r.media_url}` : '';\nconst maps = r.google_maps_link ? `\\n${r.google_maps_link}` : '';\n\nconst text = `*${r.titulo || ''}* — ${r.ciudad || ''}\\n${r.direccion || ''}\\n\\n*Precio:* $${r.precio_actual || ''}\\n*Estado:* ${r.status_txt || ''}${cierre}${hab}${ban}${area}${foto}${maps}`;\n\nconst replyMarkup = {\n  inline_keyboard: [\n    [{ text: '⭐ Seguir', callback_data: `menu_seguir_${r.property_id}` }],\n    [{ text: '👤 Asesor', callback_data: 'menu_asesor' }],\n    [{ text: '⬅️ Volver', callback_data: 'menu_inicio' }]\n  ]\n};\n\nreturn [{ json: { text, replyMarkup } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -752,
+        -1232
+      ],
+      "id": "15fd9953-f8b9-4b49-80ab-413483ef869d",
+      "name": "Build Detalle"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b06e477a-225e-4444-af98-4ffea964667e",
+              "leftValue": "={{$node[\"Normalize\"].json.isCallback === true}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -528,
+        -1232
+      ],
+      "id": "7f040026-ee66-449c-a32f-782734b44a8a",
+      "name": "IF edit_or_send (detalle)"
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "text": "={{$json.text}}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_notification": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -80,
+        -1136
+      ],
+      "id": "ec923e09-81f2-417e-94e6-5d867e6d9426",
+      "name": "Send Detalle",
+      "webhookId": "fe7cba10-bd7d-446d-b3e5-9a7da8a49af9",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "editMessageText",
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "messageId": "={{$node[\"Normalize\"].json.message_id}}",
+        "replyMarkup": "inlineKeyboard",
+        "text": "={{$json.text}}",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "={{ $('Build Detalle').item.json.replyMarkup.inline_keyboard[0][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{ $('Build Detalle').item.json.replyMarkup.inline_keyboard[0][0].callback_data }}"
+                    }
+                  },
+                  {
+                    "text": "={{ $('Build Detalle').item.json.replyMarkup.inline_keyboard[1][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{ $('Build Detalle').item.json.replyMarkup.inline_keyboard[1][0].callback_data }}"
+                    }
+                  },
+                  {
+                    "text": "={{ $('Build Detalle').item.json.replyMarkup.inline_keyboard[2][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{ $('Build Detalle').item.json.replyMarkup.inline_keyboard[2][0].callback_data }}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -80,
+        -1328
+      ],
+      "id": "532b1dcb-5b51-45c1-a092-8a3a988fa75b",
+      "name": "Edit detalle",
+      "webhookId": "2426ff82-fde8-4a72-beae-caa493a1d57d",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH tipos AS (\n  SELECT * FROM (VALUES\n    (1,'Apartamento'),\n    (2,'Casa'),\n    (3,'Oficina'),\n    (4,'Local'),\n    (5,'Bodega'),\n    (6,'Lote')\n  ) AS t(id,label)\n)\nSELECT \n  t.id::text AS tipo,\n  t.label,\n  COUNT(a.id) AS cnt\nFROM tipos t\nLEFT JOIN public.assets a\n  ON a.asset_type = t.id AND a.deleted = 0\nGROUP BY t.id, t.label\nORDER BY t.id;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -304,
+        -944
+      ],
+      "id": "1ad3758a-3794-4f91-85a7-87547b5ab702",
+      "name": "Query Tipos",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = items.map(i => i.json);\n\n// Botones siempre para los 6 tipos\nconst inline_keyboard = rows.map(r => [{\n  text: `${r.label} (${r.cnt})`,\n  callback_data: `buscar_tipo_${r.tipo}`\n}]);\n\n// Agregar botón volver\ninline_keyboard.push([{ text: '⬅️ Volver', callback_data: 'menu_inicio' }]);\n\nreturn [{\n  json: {\n    text: '*Buscar inmuebles* — Elige el *tipo de activo*:',\n    replyMarkup: { inline_keyboard }\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        -944
+      ],
+      "id": "93410876-6aff-44e3-bdad-0507bc2ca1fe",
+      "name": "Build Keyboard Tipos"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "eece8534-ed1d-4879-a5ed-82892f4b1721",
+              "leftValue": "={{$node[\"Normalize\"].json.isCallback === true}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        144,
+        -208
+      ],
+      "id": "21cb4821-86d4-4d93-9fd2-9b02418e9c04",
+      "name": "IF edit_or_send (buscar tipo)"
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "text": "={{$json.text}}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "={{ $('Build Keyboard Tipos').item.json.replyMarkup.inline_keyboard[1][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{ $('Build Keyboard Tipos').item.json.replyMarkup.inline_keyboard[1][0].callback_data }}"
+                    }
+                  },
+                  {
+                    "text": "={{ $('Build Keyboard Tipos').item.json.replyMarkup.inline_keyboard[0][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{ $('Build Keyboard Tipos').item.json.replyMarkup.inline_keyboard[0][0].callback_data }}"
+                    }
+                  },
+                  {
+                    "text": "={{ $('Build Keyboard Tipos').item.json.replyMarkup.inline_keyboard[4][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{ $('Build Keyboard Tipos').item.json.replyMarkup.inline_keyboard[4][0].callback_data }}"
+                    }
+                  },
+                  {
+                    "text": "={{ $('Build Keyboard Tipos').item.json.replyMarkup.inline_keyboard[2][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{ $('Build Keyboard Tipos').item.json.replyMarkup.inline_keyboard[2][0].callback_data }}"
+                    }
+                  },
+                  {
+                    "text": "={{ $('Build Keyboard Tipos').item.json.replyMarkup.inline_keyboard[3][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{ $('Build Keyboard Tipos').item.json.replyMarkup.inline_keyboard[3][0].callback_data }}"
+                    }
+                  },
+                  {
+                    "text": "={{ $('Build Keyboard Tipos').item.json.replyMarkup.inline_keyboard[5][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{ $('Build Keyboard Tipos').item.json.replyMarkup.inline_keyboard[5][0].callback_data }}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "Markdown"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        592,
+        880
+      ],
+      "id": "c6536c5e-fbc6-4fc4-a86d-d99e97031c54",
+      "name": "Send Buscar Tipo",
+      "webhookId": "8017a705-4894-40ac-8228-3c9873912212",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "editMessageText",
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "messageId": "={{$node[\"Normalize\"].json.message_id}}",
+        "replyMarkup": "inlineKeyboard",
+        "text": "={{$json.text}}",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "={{ $json.replyMarkup.inline_keyboard[1][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{ $json.replyMarkup.inline_keyboard[1][0].callback_data }}"
+                    }
+                  },
+                  {
+                    "text": "={{ $json.replyMarkup.inline_keyboard[0][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{ $json.replyMarkup.inline_keyboard[0][0].callback_data }}"
+                    }
+                  },
+                  {
+                    "text": "={{ $json.replyMarkup.inline_keyboard[4][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{ $json.replyMarkup.inline_keyboard[4][0].callback_data }}"
+                    }
+                  },
+                  {
+                    "text": "={{ $json.replyMarkup.inline_keyboard[2][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{ $json.replyMarkup.inline_keyboard[2][0].callback_data }}"
+                    }
+                  },
+                  {
+                    "text": "={{ $json.replyMarkup.inline_keyboard[3][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{ $json.replyMarkup.inline_keyboard[3][0].callback_data }}"
+                    }
+                  },
+                  {
+                    "text": "={{ $json.replyMarkup.inline_keyboard[5][0].text }}",
+                    "additionalFields": {
+                      "callback_data": "={{ $json.replyMarkup.inline_keyboard[5][0].callback_data }}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        592,
+        -208
+      ],
+      "id": "5cf8458f-28e4-4f8e-a3ee-e74ec13cbc5b",
+      "name": "Edit Buscar Tipo",
+      "webhookId": "8e81ccdd-485b-44c6-ac09-4b0c890213f4",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH sel AS (\n  SELECT replace($2::text, 'buscar_tipo_', '') AS at\n)\nINSERT INTO public.event_log (lead_id, evento, payload)\nVALUES ($1::uuid, 'await_city', jsonb_build_object('asset_type', (SELECT at FROM sel)));",
+        "options": {
+          "queryReplacement": "={{$node[\"Upsert Lead\"].json.id}}, {{$node[\"Normalize\"].json.text}}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -528,
+        -776
+      ],
+      "id": "13a4f28b-32d9-4b64-a082-326e05d58ead",
+      "name": "Set Await City",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "text": "Perfecto. Escribe la ciudad donde te interesa buscar (ej.: \"Medellín\", \"Bogotá\", \"Cali\").",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_notification": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -304,
+        -728
+      ],
+      "id": "2bdb6d46-871c-40da-a7e8-f812d4fb266d",
+      "name": "Ask City",
+      "webhookId": "2c89bec2-bdd5-4aa3-ae1e-ad66a2e66f34",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const at = $json.asset_type ?? null;\nconst rows = Array.isArray($json.cities) ? $json.cities.filter(Boolean) : [];\nconst inline_keyboard = rows.map(c => [{\n  text: `${c.title} (${c.assets_cnt})`,\n  callback_data: at != null ? `buscar_ciudad_${c.city_id}_tipo_${at}` : `buscar_ciudad_${c.city_id}_tipo_`\n}]);\nif (!inline_keyboard.length) {\n  inline_keyboard.push([{ text: 'No encontré coincidencias. Intenta otra vez.', callback_data: 'menu_buscar' }]);\n}\ninline_keyboard.push([{ text: '⬅️ Volver', callback_data: 'menu_inicio' }]);\nconst text = inline_keyboard.length > 1 && rows.length > 0 ? '*Elige una ciudad:*' : '*Lo siento no tenemos activos en esa ciudad.* Puedes elegir otra opción:';\nreturn [{ json: { text, replyMarkup: { inline_keyboard } } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -528,
+        784
+      ],
+      "id": "faa94047-a617-4fd2-b83f-6bf804424c9b",
+      "name": "Build Keyboard Ciudad"
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "text": "={{$json.text}}",
+        "replyMarkup": "inlineKeyboard",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -80,
+        784
+      ],
+      "id": "6facb742-4687-4e9c-955d-028ba3efcfc0",
+      "name": "Send city choices",
+      "webhookId": "9d603ed9-5964-46d6-800b-48099d043017",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e6eb721b-16c3-46e6-883d-16098334083b",
+              "leftValue": "={{$node[\"Normalize\"].json.isCallback === false}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -2224,
+        568
+      ],
+      "id": "97c231c8-fb84-4795-a720-6851580024de",
+      "name": "IF to LLM (not callback)"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $('Telegram Trigger').item.json.message.text }}",
+        "options": {
+          "systemMessage": "=Clasifica el mensaje del usuario en UNA SOLA categoría de esta lista:\n- saludo  (hola, hey, qué tal, q hubo, cómo vas, buenos días, buenas tardes, buenas noches, saludos, 👋)\n- buscar_ciudad  (cuando el texto probablemete menciona una o más ciudades o zonas)\n- fuera_de_contexto  (cualquier cosa que no sea saludo, ciudad o precio)\n- precio_min  (entero, millones COP)\n- precio_max  (entero, millones COP)\n\nResponde SOLO con un JSON válido EXACTAMENTE en uno de estos formatos:\n{\"intencion\":\"<categoria>\"}\n{\"precio_max\":<entero>}\n{\"precio_min\":<entero>,\"precio_max\":<entero>}\n\nEjemplos:\nUsuario: \"hola\" → {\"intencion\":\"saludo\"}\nUsuario: \"cali\" → {\"intencion\":\"buscar_ciudad\"}\nUsuario: \"cuantos goles hizo cr7\" → {\"intencion\":\"fuera_de_contexto\"}\nUsuario: \"unos 350 millones\" → {\"precio_max\":350}\nUsuario: \"entre 200 y 400\" → {\"precio_min\":200,\"precio_max\":400}"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [
+        -2000,
+        -296
+      ],
+      "id": "06fdf191-893e-4e95-9db4-daafa6696462",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "model": "llama3:latest",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        -1928,
+        -72
+      ],
+      "id": "3a7e4a68-e9b9-4cd0-8999-afa9c3f36d31",
+      "name": "Ollama Chat Model",
+      "credentials": {
+        "ollamaApi": {
+          "id": "RB9vx4QzTU8cNhcG",
+          "name": "Ollama account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Objetivo: tomar el JSON que devolvió la IA y extraer literalmente la intención,\n// sin \"reconvertir\" nada. Si no hay JSON válido, devolvemos 'fuera_de_contexto'.\n\nfunction asObject(x) {\n  if (!x) return null;\n  if (typeof x === 'object') return x;\n  if (typeof x === 'string') {\n    // si viene texto con JSON embebido, toma el primer {...}\n    const m = x.match(/\\{[\\s\\S]*\\}/);\n    const s = m ? m[0] : x;\n    try { return JSON.parse(s); } catch { return null; }\n  }\n  return null;\n}\n\n// La salida del AI Agent puede venir en distintos campos según el nodo/versión\nconst candidates = [\n  $json.response,   // /api/generate (HTTP)\n  $json.text,       // AI Agent / Chat Model\n  $json.output,     // Algunas integraciones de LangChain\n  $json.data,\n  $json.message,\n  $json.result\n];\n\nlet intent = null;\nfor (const c of candidates) {\n  const obj = asObject(c);\n  if (!obj) continue;\n  const val =\n    obj['intención'] ??\n    obj['intencion'] ??\n    obj['intention'] ??\n    obj['intent'] ??\n    obj['categoria'];\n  if (typeof val === 'string' && val.trim()) {\n    intent = val.trim().toLowerCase();\n    break;\n  }\n}\n\n// Último recurso: buscar la clave en el JSON stringificado completo del nodo\nif (!intent) {\n  const raw = JSON.stringify($json);\n  const m = raw.match(/\"intenci(?:ó|o)n\"\\s*:\\s*\"([^\"]+)\"/i);\n  if (m) intent = m[1].trim().toLowerCase();\n}\n\nreturn [{ json: { intencion: intent || 'fuera_de_contexto' } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1648,
+        -296
+      ],
+      "id": "c0d64e10-ca11-4908-8879-12c02ff5d9bf",
+      "name": "Parse Intent"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $node[\"Parse Intent\"].json.intencion }}",
+                    "rightValue": "saludo",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "9fca5bdd-95fe-4fe3-8469-986a62e4d1c1"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "7ec0a7a8-86fb-42b2-ae7c-45492928e0cb",
+                    "leftValue": "={{ $node[\"Parse Intent\"].json.intencion }}",
+                    "rightValue": "buscar_ciudad",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "b4c41f12-2912-4e2c-8efd-53f5074ab5cd",
+                    "leftValue": "={{ $node[\"Parse Intent\"].json.intencion }}",
+                    "rightValue": "fuera_de_contexto",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        -1424,
+        -312
+      ],
+      "id": "23fe7255-cc4e-4637-9176-b9d0fb881099",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH lead AS (\n  SELECT $2::uuid AS lead_id\n),\nat AS (\n  -- Último asset_type guardado para ese lead (evento await_city)\n  SELECT (e.payload ->> 'asset_type')::int AS asset_type\n  FROM public.event_log e\n  JOIN lead l ON l.lead_id = e.lead_id\n  WHERE e.evento = 'await_city'\n  ORDER BY e.created_at DESC\n  LIMIT 1\n),\nmatches AS (\n  SELECT c.id::bigint AS city_id,\n         c.title\n  FROM public.mia_city c\n  WHERE unaccent(lower(c.title)) LIKE '%' || unaccent(lower($1)) || '%'\n),\nhits AS (\n  SELECT \n    m.city_id::text,\n    m.title,\n    (\n      SELECT COUNT(*)::int\n      FROM public.assets a\n      WHERE a.deleted = 0\n        AND a.city_id = m.city_id\n        AND ( (SELECT asset_type FROM at) IS NULL\n              OR a.asset_type = (SELECT asset_type FROM at) )\n    ) AS assets_cnt\n  FROM matches m\n)\nSELECT \n  COUNT(*)::int               AS n,\n  MIN(h.city_id)::text        AS first_id,\n  MIN(h.title)                AS first_title,\n  MIN(h.assets_cnt)           AS first_assets_cnt,\n  (SELECT asset_type FROM at) AS asset_type,\n  json_agg(h)                 AS cities\nFROM hits h;",
+        "options": {
+          "queryReplacement": "={{ $node[\"Normalize\"].json.text }}, {{ $node[\"Upsert Lead\"].json.id }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -976,
+        880
+      ],
+      "id": "eebb278a-cbe4-423d-9abd-4fe205d2104c",
+      "name": "Validate City & Count Assets",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e7837769-f136-40d5-92f5-981f57ab2eb0",
+              "leftValue": "={{ $json.n > 1 }}",
+              "rightValue": "0",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -752,
+        880
+      ],
+      "id": "a28b2f71-4036-49e0-a5ee-0ffadef4c313",
+      "name": "varias ciudades"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    text: 'No me has indicado una ciudad. intentalo de nuevo.'\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -528,
+        1072
+      ],
+      "id": "ab18c742-546c-4174-abf0-7628ecb8e72a",
+      "name": "ciudad no detectada"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "53c45030-193a-45fb-9366-8c3fa5612e5d",
+              "leftValue": "={{$node[\"Normalize\"].json.isCallback === true}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -304,
+        1360
+      ],
+      "id": "316f8795-dfab-481a-95a4-aa48952ce66f",
+      "name": "IF send_or_edit (presupuesto)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// BuildBudgetKeyboard (tolerant)\n// - If budget_id present -> build action buttons bud:<id36>:<action>\n// - Else -> build preset budget range buttons budget:<code>\nfunction toBase36Id(x) {\n  const s = String(x ?? \"\").trim();\n  const n = Number(s);\n  if (Number.isInteger(n) && n >= 0) return n.toString(36);\n  let acc = 0;\n  for (let i = 0; i < s.length; i++) acc = ((acc << 5) - acc) + s.charCodeAt(i);\n  acc = Math.abs(acc) >>> 0;\n  return acc.toString(36);\n}\nconst j = (items[0] && items[0].json) ? items[0].json : {};\nconst hasBudgetId = j.budget_id != null || j.presupuesto_id != null || j.id != null;\n\nlet reply_markup;\nif (hasBudgetId) {\n  const budgetId = j.budget_id ?? j.presupuesto_id ?? j.id;\n  const allowed = [\"view\",\"pdf\",\"accept\",\"reject\"];\n  let actions = Array.isArray(j.actions) && j.actions.length ? j.actions : allowed;\n  actions = actions.filter(a => allowed.includes(a));\n  const id36 = toBase36Id(budgetId);\n  const rows = [];\n  function label(a){ return a===\"view\"?\"Ver\":a===\"pdf\"?\"PDF\":a===\"accept\"?\"Aceptar\":a===\"reject\"?\"Rechazar\":a; }\n  for (let k = 0; k < actions.length; k += 2) {\n    const row = [];\n    for (let h = k; h < Math.min(k+2, actions.length); h++) {\n      const act = actions[h];\n      row.push({ text: label(act), callback_data: `bud:${id36}:${act}` });\n    }\n    rows.push(row);\n  }\n  reply_markup = { inline_keyboard: rows };\n  return [{ json: { ...j, reply_markup, keyboard_built: true, budget_id_base36: id36, budget_id_raw: budgetId } }];\n}\n\n// No budget_id: build preset BUDGET RANGE keyboard\nconst ranges = [\n  {label:\"0 - 200 millones\", code:\"presu_0_200\"},\n  {label:\"200 - 400 millones\", code:\"presu_200_400\"},\n  {label:\"400 - 600 millones\", code:\"presu_400_600\"},\n  {label:\"Más de 600 millones\", code:\"presu_mas_600\"},\n  {label:\"Cambiar ciudad\", code:\"presu_cambiar_ciudad\"},\n  {label:\"Inicio\", code:\"menu_inicio\"}\n];\nconst rows = [];\nfor (let i=0; i<ranges.length; i+=3) { // up to 3 per row for compact view\n  const row = [];\n  for (let k=i; k<Math.min(i+3, ranges.length); k++) {\n    const r = ranges[k];\n    // callback_data canonical: budget:<code>, keep it <=64 bytes\n    row.push({ text: r.label, callback_data: `${r.code}` });\n  }\n  rows.push(row);\n}\nreply_markup = { inline_keyboard: rows };\nreturn [{ json: { ...j, reply_markup, keyboard_built: true } }];\n"
+      },
+      "id": "ac3c96bd-daa8-4f15-93e6-c5eadb680f4a",
+      "name": "BuildBudgetKeyboard → Send Menu",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        -1712
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// BuildBudgetKeyboard (tolerant)\n// - If budget_id present -> build action buttons bud:<id36>:<action>\n// - Else -> build preset budget range buttons budget:<code>\nfunction toBase36Id(x) {\n  const s = String(x ?? \"\").trim();\n  const n = Number(s);\n  if (Number.isInteger(n) && n >= 0) return n.toString(36);\n  let acc = 0;\n  for (let i = 0; i < s.length; i++) acc = ((acc << 5) - acc) + s.charCodeAt(i);\n  acc = Math.abs(acc) >>> 0;\n  return acc.toString(36);\n}\nconst j = (items[0] && items[0].json) ? items[0].json : {};\nconst hasBudgetId = j.budget_id != null || j.presupuesto_id != null || j.id != null;\n\nlet reply_markup;\nif (hasBudgetId) {\n  const budgetId = j.budget_id ?? j.presupuesto_id ?? j.id;\n  const allowed = [\"view\",\"pdf\",\"accept\",\"reject\"];\n  let actions = Array.isArray(j.actions) && j.actions.length ? j.actions : allowed;\n  actions = actions.filter(a => allowed.includes(a));\n  const id36 = toBase36Id(budgetId);\n  const rows = [];\n  function label(a){ return a===\"view\"?\"Ver\":a===\"pdf\"?\"PDF\":a===\"accept\"?\"Aceptar\":a===\"reject\"?\"Rechazar\":a; }\n  for (let k = 0; k < actions.length; k += 2) {\n    const row = [];\n    for (let h = k; h < Math.min(k+2, actions.length); h++) {\n      const act = actions[h];\n      row.push({ text: label(act), callback_data: `bud:${id36}:${act}` });\n    }\n    rows.push(row);\n  }\n  reply_markup = { inline_keyboard: rows };\n  return [{ json: { ...j, reply_markup, keyboard_built: true, budget_id_base36: id36, budget_id_raw: budgetId } }];\n}\n\n// No budget_id: build preset BUDGET RANGE keyboard\nconst ranges = [\n  {label:\"0 - 200 millones\", code:\"presu_0_200\"},\n  {label:\"200 - 400 millones\", code:\"presu_200_400\"},\n  {label:\"400 - 600 millones\", code:\"presu_400_600\"},\n  {label:\"Más de 600 millones\", code:\"presu_mas_600\"},\n  {label:\"Cambiar ciudad\", code:\"presu_cambiar_ciudad\"},\n  {label:\"Inicio\", code:\"menu_inicio\"}\n];\nconst rows = [];\nfor (let i=0; i<ranges.length; i+=3) { // up to 3 per row for compact view\n  const row = [];\n  for (let k=i; k<Math.min(i+3, ranges.length); k++) {\n    const r = ranges[k];\n    // callback_data canonical: budget:<code>, keep it <=64 bytes\n    row.push({ text: r.label, callback_data: `${r.code}` });\n  }\n  rows.push(row);\n}\nreply_markup = { inline_keyboard: rows };\nreturn [{ json: { ...j, reply_markup, keyboard_built: true } }];\n"
+      },
+      "id": "2487c771-41e7-43ca-b2a4-71ea1371117e",
+      "name": "BuildBudgetKeyboard → Edit Menu",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        -1904
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// BuildBudgetKeyboard (tolerant)\n// - If budget_id present -> build action buttons bud:<id36>:<action>\n// - Else -> build preset budget range buttons budget:<code>\nfunction toBase36Id(x) {\n  const s = String(x ?? \"\").trim();\n  const n = Number(s);\n  if (Number.isInteger(n) && n >= 0) return n.toString(36);\n  let acc = 0;\n  for (let i = 0; i < s.length; i++) acc = ((acc << 5) - acc) + s.charCodeAt(i);\n  acc = Math.abs(acc) >>> 0;\n  return acc.toString(36);\n}\nconst j = (items[0] && items[0].json) ? items[0].json : {};\nconst hasBudgetId = j.budget_id != null || j.presupuesto_id != null || j.id != null;\n\nlet reply_markup;\nif (hasBudgetId) {\n  const budgetId = j.budget_id ?? j.presupuesto_id ?? j.id;\n  const allowed = [\"view\",\"pdf\",\"accept\",\"reject\"];\n  let actions = Array.isArray(j.actions) && j.actions.length ? j.actions : allowed;\n  actions = actions.filter(a => allowed.includes(a));\n  const id36 = toBase36Id(budgetId);\n  const rows = [];\n  function label(a){ return a===\"view\"?\"Ver\":a===\"pdf\"?\"PDF\":a===\"accept\"?\"Aceptar\":a===\"reject\"?\"Rechazar\":a; }\n  for (let k = 0; k < actions.length; k += 2) {\n    const row = [];\n    for (let h = k; h < Math.min(k+2, actions.length); h++) {\n      const act = actions[h];\n      row.push({ text: label(act), callback_data: `bud:${id36}:${act}` });\n    }\n    rows.push(row);\n  }\n  reply_markup = { inline_keyboard: rows };\n  return [{ json: { ...j, reply_markup, keyboard_built: true, budget_id_base36: id36, budget_id_raw: budgetId } }];\n}\n\n// No budget_id: build preset BUDGET RANGE keyboard\nconst ranges = j.budget_ranges && Array.isArray(j.budget_ranges) ? j.budget_ranges : [\n  {label:\"0 - 200M\", code:\"r:0-200\"},\n  {label:\"200 - 400M\", code:\"r:200-400\"},\n  {label:\"400 - 600M\", code:\"r:400-600\"},\n  {label:\"Otro presupuesto\", code:\"other\"},\n  {label:\"Cambiar ciudad\", code:\"change_city\"},\n  {label:\"Inicio\", code:\"home\"}\n];\nconst rows = [];\nfor (let i=0; i<ranges.length; i+=3) { // up to 3 per row for compact view\n  const row = [];\n  for (let k=i; k<Math.min(i+3, ranges.length); k++) {\n    const r = ranges[k];\n    // callback_data canonical: budget:<code>, keep it <=64 bytes\n    row.push({ text: r.label, callback_data: `budget:${r.code}` });\n  }\n  rows.push(row);\n}\nreply_markup = { inline_keyboard: rows };\nreturn [{ json: { ...j, reply_markup, keyboard_built: true } }];\n"
+      },
+      "id": "db19c296-03d6-41df-8706-50a67cfd8505",
+      "name": "BuildBudgetKeyboard → Edit top5",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        -496
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// BuildBudgetKeyboard (tolerant)\n// - If budget_id present -> build action buttons bud:<id36>:<action>\n// - Else -> build preset budget range buttons budget:<code>\nfunction toBase36Id(x) {\n  const s = String(x ?? \"\").trim();\n  const n = Number(s);\n  if (Number.isInteger(n) && n >= 0) return n.toString(36);\n  let acc = 0;\n  for (let i = 0; i < s.length; i++) acc = ((acc << 5) - acc) + s.charCodeAt(i);\n  acc = Math.abs(acc) >>> 0;\n  return acc.toString(36);\n}\nconst j = (items[0] && items[0].json) ? items[0].json : {};\nconst hasBudgetId = j.budget_id != null || j.presupuesto_id != null || j.id != null;\n\nlet reply_markup;\nif (hasBudgetId) {\n  const budgetId = j.budget_id ?? j.presupuesto_id ?? j.id;\n  const allowed = [\"view\",\"pdf\",\"accept\",\"reject\"];\n  let actions = Array.isArray(j.actions) && j.actions.length ? j.actions : allowed;\n  actions = actions.filter(a => allowed.includes(a));\n  const id36 = toBase36Id(budgetId);\n  const rows = [];\n  function label(a){ return a===\"view\"?\"Ver\":a===\"pdf\"?\"PDF\":a===\"accept\"?\"Aceptar\":a===\"reject\"?\"Rechazar\":a; }\n  for (let k = 0; k < actions.length; k += 2) {\n    const row = [];\n    for (let h = k; h < Math.min(k+2, actions.length); h++) {\n      const act = actions[h];\n      row.push({ text: label(act), callback_data: `bud:${id36}:${act}` });\n    }\n    rows.push(row);\n  }\n  reply_markup = { inline_keyboard: rows };\n  return [{ json: { ...j, reply_markup, keyboard_built: true, budget_id_base36: id36, budget_id_raw: budgetId } }];\n}\n\n// No budget_id: build preset BUDGET RANGE keyboard\nconst ranges = j.budget_ranges && Array.isArray(j.budget_ranges) ? j.budget_ranges : [\n  {label:\"0 - 200M\", code:\"r:0-200\"},\n  {label:\"200 - 400M\", code:\"r:200-400\"},\n  {label:\"400 - 600M\", code:\"r:400-600\"},\n  {label:\"Otro presupuesto\", code:\"other\"},\n  {label:\"Cambiar ciudad\", code:\"change_city\"},\n  {label:\"Inicio\", code:\"home\"}\n];\nconst rows = [];\nfor (let i=0; i<ranges.length; i+=3) { // up to 3 per row for compact view\n  const row = [];\n  for (let k=i; k<Math.min(i+3, ranges.length); k++) {\n    const r = ranges[k];\n    // callback_data canonical: budget:<code>, keep it <=64 bytes\n    row.push({ text: r.label, callback_data: `budget:${r.code}` });\n  }\n  rows.push(row);\n}\nreply_markup = { inline_keyboard: rows };\nreturn [{ json: { ...j, reply_markup, keyboard_built: true } }];\n"
+      },
+      "id": "9b45a237-fe75-4854-872e-f272b12924d4",
+      "name": "BuildBudgetKeyboard → send top5",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        -304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// BuildBudgetKeyboard (tolerant)\n// - If budget_id present -> build action buttons bud:<id36>:<action>\n// - Else -> build preset budget range buttons budget:<code>\nfunction toBase36Id(x) {\n  const s = String(x ?? \"\").trim();\n  const n = Number(s);\n  if (Number.isInteger(n) && n >= 0) return n.toString(36);\n  let acc = 0;\n  for (let i = 0; i < s.length; i++) acc = ((acc << 5) - acc) + s.charCodeAt(i);\n  acc = Math.abs(acc) >>> 0;\n  return acc.toString(36);\n}\nconst j = (items[0] && items[0].json) ? items[0].json : {};\nconst hasBudgetId = j.budget_id != null || j.presupuesto_id != null || j.id != null;\n\nlet reply_markup;\nif (hasBudgetId) {\n  const budgetId = j.budget_id ?? j.presupuesto_id ?? j.id;\n  const allowed = [\"view\",\"pdf\",\"accept\",\"reject\"];\n  let actions = Array.isArray(j.actions) && j.actions.length ? j.actions : allowed;\n  actions = actions.filter(a => allowed.includes(a));\n  const id36 = toBase36Id(budgetId);\n  const rows = [];\n  function label(a){ return a===\"view\"?\"Ver\":a===\"pdf\"?\"PDF\":a===\"accept\"?\"Aceptar\":a===\"reject\"?\"Rechazar\":a; }\n  for (let k = 0; k < actions.length; k += 2) {\n    const row = [];\n    for (let h = k; h < Math.min(k+2, actions.length); h++) {\n      const act = actions[h];\n      row.push({ text: label(act), callback_data: `bud:${id36}:${act}` });\n    }\n    rows.push(row);\n  }\n  reply_markup = { inline_keyboard: rows };\n  return [{ json: { ...j, reply_markup, keyboard_built: true, budget_id_base36: id36, budget_id_raw: budgetId } }];\n}\n\n// No budget_id: build preset BUDGET RANGE keyboard\nconst ranges = j.budget_ranges && Array.isArray(j.budget_ranges) ? j.budget_ranges : [\n  {label:\"0 - 200M\", code:\"r:0-200\"},\n  {label:\"200 - 400M\", code:\"r:200-400\"},\n  {label:\"400 - 600M\", code:\"r:400-600\"},\n  {label:\"Otro presupuesto\", code:\"other\"},\n  {label:\"Cambiar ciudad\", code:\"change_city\"},\n  {label:\"Inicio\", code:\"home\"}\n];\nconst rows = [];\nfor (let i=0; i<ranges.length; i+=3) { // up to 3 per row for compact view\n  const row = [];\n  for (let k=i; k<Math.min(i+3, ranges.length); k++) {\n    const r = ranges[k];\n    // callback_data canonical: budget:<code>, keep it <=64 bytes\n    row.push({ text: r.label, callback_data: `budget:${r.code}` });\n  }\n  rows.push(row);\n}\nreply_markup = { inline_keyboard: rows };\nreturn [{ json: { ...j, reply_markup, keyboard_built: true } }];\n"
+      },
+      "id": "60c29ede-0e89-4f19-9cc8-f45bd3c6d70b",
+      "name": "BuildBudgetKeyboard → Send Detalle",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -304,
+        -1136
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// BuildBudgetKeyboard (tolerant)\n// - If budget_id present -> build action buttons bud:<id36>:<action>\n// - Else -> build preset budget range buttons budget:<code>\nfunction toBase36Id(x) {\n  const s = String(x ?? \"\").trim();\n  const n = Number(s);\n  if (Number.isInteger(n) && n >= 0) return n.toString(36);\n  let acc = 0;\n  for (let i = 0; i < s.length; i++) acc = ((acc << 5) - acc) + s.charCodeAt(i);\n  acc = Math.abs(acc) >>> 0;\n  return acc.toString(36);\n}\nconst j = (items[0] && items[0].json) ? items[0].json : {};\nconst hasBudgetId = j.budget_id != null || j.presupuesto_id != null || j.id != null;\n\nlet reply_markup;\nif (hasBudgetId) {\n  const budgetId = j.budget_id ?? j.presupuesto_id ?? j.id;\n  const allowed = [\"view\",\"pdf\",\"accept\",\"reject\"];\n  let actions = Array.isArray(j.actions) && j.actions.length ? j.actions : allowed;\n  actions = actions.filter(a => allowed.includes(a));\n  const id36 = toBase36Id(budgetId);\n  const rows = [];\n  function label(a){ return a===\"view\"?\"Ver\":a===\"pdf\"?\"PDF\":a===\"accept\"?\"Aceptar\":a===\"reject\"?\"Rechazar\":a; }\n  for (let k = 0; k < actions.length; k += 2) {\n    const row = [];\n    for (let h = k; h < Math.min(k+2, actions.length); h++) {\n      const act = actions[h];\n      row.push({ text: label(act), callback_data: `bud:${id36}:${act}` });\n    }\n    rows.push(row);\n  }\n  reply_markup = { inline_keyboard: rows };\n  return [{ json: { ...j, reply_markup, keyboard_built: true, budget_id_base36: id36, budget_id_raw: budgetId } }];\n}\n\n// No budget_id: build preset BUDGET RANGE keyboard\nconst ranges = j.budget_ranges && Array.isArray(j.budget_ranges) ? j.budget_ranges : [\n  {label:\"0 - 200M\", code:\"r:0-200\"},\n  {label:\"200 - 400M\", code:\"r:200-400\"},\n  {label:\"400 - 600M\", code:\"r:400-600\"},\n  {label:\"Otro presupuesto\", code:\"other\"},\n  {label:\"Cambiar ciudad\", code:\"change_city\"},\n  {label:\"Inicio\", code:\"home\"}\n];\nconst rows = [];\nfor (let i=0; i<ranges.length; i+=3) { // up to 3 per row for compact view\n  const row = [];\n  for (let k=i; k<Math.min(i+3, ranges.length); k++) {\n    const r = ranges[k];\n    // callback_data canonical: budget:<code>, keep it <=64 bytes\n    row.push({ text: r.label, callback_data: `budget:${r.code}` });\n  }\n  rows.push(row);\n}\nreply_markup = { inline_keyboard: rows };\nreturn [{ json: { ...j, reply_markup, keyboard_built: true } }];\n"
+      },
+      "id": "dca21955-79f0-4958-a245-6542f57e3548",
+      "name": "BuildBudgetKeyboard → Edit detalle",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -304,
+        -1328
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// BuildBudgetKeyboard (tolerant)\n// - If budget_id present -> build action buttons bud:<id36>:<action>\n// - Else -> build preset budget range buttons budget:<code>\nfunction toBase36Id(x) {\n  const s = String(x ?? \"\").trim();\n  const n = Number(s);\n  if (Number.isInteger(n) && n >= 0) return n.toString(36);\n  let acc = 0;\n  for (let i = 0; i < s.length; i++) acc = ((acc << 5) - acc) + s.charCodeAt(i);\n  acc = Math.abs(acc) >>> 0;\n  return acc.toString(36);\n}\nconst j = (items[0] && items[0].json) ? items[0].json : {};\nconst hasBudgetId = j.budget_id != null || j.presupuesto_id != null || j.id != null;\n\nlet reply_markup;\nif (hasBudgetId) {\n  const budgetId = j.budget_id ?? j.presupuesto_id ?? j.id;\n  const allowed = [\"view\",\"pdf\",\"accept\",\"reject\"];\n  let actions = Array.isArray(j.actions) && j.actions.length ? j.actions : allowed;\n  actions = actions.filter(a => allowed.includes(a));\n  const id36 = toBase36Id(budgetId);\n  const rows = [];\n  function label(a){ return a===\"view\"?\"Ver\":a===\"pdf\"?\"PDF\":a===\"accept\"?\"Aceptar\":a===\"reject\"?\"Rechazar\":a; }\n  for (let k = 0; k < actions.length; k += 2) {\n    const row = [];\n    for (let h = k; h < Math.min(k+2, actions.length); h++) {\n      const act = actions[h];\n      row.push({ text: label(act), callback_data: `bud:${id36}:${act}` });\n    }\n    rows.push(row);\n  }\n  reply_markup = { inline_keyboard: rows };\n  return [{ json: { ...j, reply_markup, keyboard_built: true, budget_id_base36: id36, budget_id_raw: budgetId } }];\n}\n\n// No budget_id: build preset BUDGET RANGE keyboard\nconst ranges = j.budget_ranges && Array.isArray(j.budget_ranges) ? j.budget_ranges : [\n  {label:\"0 - 200M\", code:\"r:0-200\"},\n  {label:\"200 - 400M\", code:\"r:200-400\"},\n  {label:\"400 - 600M\", code:\"r:400-600\"},\n  {label:\"Otro presupuesto\", code:\"other\"},\n  {label:\"Cambiar ciudad\", code:\"change_city\"},\n  {label:\"Inicio\", code:\"home\"}\n];\nconst rows = [];\nfor (let i=0; i<ranges.length; i+=3) { // up to 3 per row for compact view\n  const row = [];\n  for (let k=i; k<Math.min(i+3, ranges.length); k++) {\n    const r = ranges[k];\n    // callback_data canonical: budget:<code>, keep it <=64 bytes\n    row.push({ text: r.label, callback_data: `budget:${r.code}` });\n  }\n  rows.push(row);\n}\nreply_markup = { inline_keyboard: rows };\nreturn [{ json: { ...j, reply_markup, keyboard_built: true } }];\n"
+      },
+      "id": "b0c54ac9-fa04-450f-9f64-b399604d91c7",
+      "name": "BuildBudgetKeyboard → Send Buscar Tipo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        368,
+        880
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// BuildBudgetKeyboard (tolerant)\n// - If budget_id present -> build action buttons bud:<id36>:<action>\n// - Else -> build preset budget range buttons budget:<code>\nfunction toBase36Id(x) {\n  const s = String(x ?? \"\").trim();\n  const n = Number(s);\n  if (Number.isInteger(n) && n >= 0) return n.toString(36);\n  let acc = 0;\n  for (let i = 0; i < s.length; i++) acc = ((acc << 5) - acc) + s.charCodeAt(i);\n  acc = Math.abs(acc) >>> 0;\n  return acc.toString(36);\n}\nconst j = (items[0] && items[0].json) ? items[0].json : {};\nconst hasBudgetId = j.budget_id != null || j.presupuesto_id != null || j.id != null;\n\nlet reply_markup;\nif (hasBudgetId) {\n  const budgetId = j.budget_id ?? j.presupuesto_id ?? j.id;\n  const allowed = [\"view\",\"pdf\",\"accept\",\"reject\"];\n  let actions = Array.isArray(j.actions) && j.actions.length ? j.actions : allowed;\n  actions = actions.filter(a => allowed.includes(a));\n  const id36 = toBase36Id(budgetId);\n  const rows = [];\n  function label(a){ return a===\"view\"?\"Ver\":a===\"pdf\"?\"PDF\":a===\"accept\"?\"Aceptar\":a===\"reject\"?\"Rechazar\":a; }\n  for (let k = 0; k < actions.length; k += 2) {\n    const row = [];\n    for (let h = k; h < Math.min(k+2, actions.length); h++) {\n      const act = actions[h];\n      row.push({ text: label(act), callback_data: `bud:${id36}:${act}` });\n    }\n    rows.push(row);\n  }\n  reply_markup = { inline_keyboard: rows };\n  return [{ json: { ...j, reply_markup, keyboard_built: true, budget_id_base36: id36, budget_id_raw: budgetId } }];\n}\n\n// No budget_id: build preset BUDGET RANGE keyboard\nconst ranges = j.budget_ranges && Array.isArray(j.budget_ranges) ? j.budget_ranges : [\n  {label:\"0 - 200M\", code:\"r:0-200\"},\n  {label:\"200 - 400M\", code:\"r:200-400\"},\n  {label:\"400 - 600M\", code:\"r:400-600\"},\n  {label:\"Otro presupuesto\", code:\"other\"},\n  {label:\"Cambiar ciudad\", code:\"change_city\"},\n  {label:\"Inicio\", code:\"home\"}\n];\nconst rows = [];\nfor (let i=0; i<ranges.length; i+=3) { // up to 3 per row for compact view\n  const row = [];\n  for (let k=i; k<Math.min(i+3, ranges.length); k++) {\n    const r = ranges[k];\n    // callback_data canonical: budget:<code>, keep it <=64 bytes\n    row.push({ text: r.label, callback_data: `budget:${r.code}` });\n  }\n  rows.push(row);\n}\nreply_markup = { inline_keyboard: rows };\nreturn [{ json: { ...j, reply_markup, keyboard_built: true } }];\n"
+      },
+      "id": "f7cf1af3-10e9-4e2f-af70-0838156f0826",
+      "name": "BuildBudgetKeyboard → Edit Buscar Tipo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        368,
+        -208
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// BuildBudgetKeyboard (tolerant)\n// - If budget_id present -> build action buttons bud:<id36>:<action>\n// - Else -> build preset budget range buttons budget:<code>\nfunction toBase36Id(x) {\n  const s = String(x ?? \"\").trim();\n  const n = Number(s);\n  if (Number.isInteger(n) && n >= 0) return n.toString(36);\n  let acc = 0;\n  for (let i = 0; i < s.length; i++) acc = ((acc << 5) - acc) + s.charCodeAt(i);\n  acc = Math.abs(acc) >>> 0;\n  return acc.toString(36);\n}\nconst j = (items[0] && items[0].json) ? items[0].json : {};\nconst hasBudgetId = j.budget_id != null || j.presupuesto_id != null || j.id != null;\n\nlet reply_markup;\nif (hasBudgetId) {\n  const budgetId = j.budget_id ?? j.presupuesto_id ?? j.id;\n  const allowed = [\"view\",\"pdf\",\"accept\",\"reject\"];\n  let actions = Array.isArray(j.actions) && j.actions.length ? j.actions : allowed;\n  actions = actions.filter(a => allowed.includes(a));\n  const id36 = toBase36Id(budgetId);\n  const rows = [];\n  function label(a){ return a===\"view\"?\"Ver\":a===\"pdf\"?\"PDF\":a===\"accept\"?\"Aceptar\":a===\"reject\"?\"Rechazar\":a; }\n  for (let k = 0; k < actions.length; k += 2) {\n    const row = [];\n    for (let h = k; h < Math.min(k+2, actions.length); h++) {\n      const act = actions[h];\n      row.push({ text: label(act), callback_data: `bud:${id36}:${act}` });\n    }\n    rows.push(row);\n  }\n  reply_markup = { inline_keyboard: rows };\n  return [{ json: { ...j, reply_markup, keyboard_built: true, budget_id_base36: id36, budget_id_raw: budgetId } }];\n}\n\n// No budget_id: build preset BUDGET RANGE keyboard\nconst ranges = j.budget_ranges && Array.isArray(j.budget_ranges) ? j.budget_ranges : [\n  {label:\"0 - 200M\", code:\"r:0-200\"},\n  {label:\"200 - 400M\", code:\"r:200-400\"},\n  {label:\"400 - 600M\", code:\"r:400-600\"},\n  {label:\"Otro presupuesto\", code:\"other\"},\n  {label:\"Cambiar ciudad\", code:\"change_city\"},\n  {label:\"Inicio\", code:\"home\"}\n];\nconst rows = [];\nfor (let i=0; i<ranges.length; i+=3) { // up to 3 per row for compact view\n  const row = [];\n  for (let k=i; k<Math.min(i+3, ranges.length); k++) {\n    const r = ranges[k];\n    // callback_data canonical: budget:<code>, keep it <=64 bytes\n    row.push({ text: r.label, callback_data: `budget:${r.code}` });\n  }\n  rows.push(row);\n}\nreply_markup = { inline_keyboard: rows };\nreturn [{ json: { ...j, reply_markup, keyboard_built: true } }];\n"
+      },
+      "id": "1fe6fc7d-5bca-4817-9005-cb9f3754f8f8",
+      "name": "BuildBudgetKeyboard → Send city choices",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -304,
+        784
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// BuildBudgetKeyboard (tolerant)\n// - If budget_id present -> build action buttons bud:<id36>:<action>\n// - Else -> build preset budget range buttons budget:<code>\nfunction toBase36Id(x) {\n  const s = String(x ?? \"\").trim();\n  const n = Number(s);\n  if (Number.isInteger(n) && n >= 0) return n.toString(36);\n  let acc = 0;\n  for (let i = 0; i < s.length; i++) acc = ((acc << 5) - acc) + s.charCodeAt(i);\n  acc = Math.abs(acc) >>> 0;\n  return acc.toString(36);\n}\nconst j = (items[0] && items[0].json) ? items[0].json : {};\nconst hasBudgetId = j.budget_id != null || j.presupuesto_id != null || j.id != null;\n\nlet reply_markup;\nif (hasBudgetId) {\n  const budgetId = j.budget_id ?? j.presupuesto_id ?? j.id;\n  const allowed = [\"view\",\"pdf\",\"accept\",\"reject\"];\n  let actions = Array.isArray(j.actions) && j.actions.length ? j.actions : allowed;\n  actions = actions.filter(a => allowed.includes(a));\n  const id36 = toBase36Id(budgetId);\n  const rows = [];\n  function label(a){ return a===\"view\"?\"Ver\":a===\"pdf\"?\"PDF\":a===\"accept\"?\"Aceptar\":a===\"reject\"?\"Rechazar\":a; }\n  for (let k = 0; k < actions.length; k += 2) {\n    const row = [];\n    for (let h = k; h < Math.min(k+2, actions.length); h++) {\n      const act = actions[h];\n      row.push({ text: label(act), callback_data: `bud:${id36}:${act}` });\n    }\n    rows.push(row);\n  }\n  reply_markup = { inline_keyboard: rows };\n  return [{ json: { ...j, reply_markup, keyboard_built: true, budget_id_base36: id36, budget_id_raw: budgetId } }];\n}\n\n// No budget_id: build preset BUDGET RANGE keyboard\nconst ranges = j.budget_ranges && Array.isArray(j.budget_ranges) ? j.budget_ranges : [\n  {label:\"0 - 200M\", code:\"r:0-200\"},\n  {label:\"200 - 400M\", code:\"r:200-400\"},\n  {label:\"400 - 600M\", code:\"r:400-600\"},\n  {label:\"Otro presupuesto\", code:\"other\"},\n  {label:\"Cambiar ciudad\", code:\"change_city\"},\n  {label:\"Inicio\", code:\"home\"}\n];\nconst rows = [];\nfor (let i=0; i<ranges.length; i+=3) { // up to 3 per row for compact view\n  const row = [];\n  for (let k=i; k<Math.min(i+3, ranges.length); k++) {\n    const r = ranges[k];\n    // callback_data canonical: budget:<code>, keep it <=64 bytes\n    row.push({ text: r.label, callback_data: `budget:${r.code}` });\n  }\n  rows.push(row);\n}\nreply_markup = { inline_keyboard: rows };\nreturn [{ json: { ...j, reply_markup, keyboard_built: true } }];\n"
+      },
+      "id": "e7656a43-d93d-4e74-be93-7353922aff5d",
+      "name": "BuildBudgetKeyboard → Edit a text message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        1168
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// BuildBudgetKeyboard (tolerant)\n// - If budget_id present -> build action buttons bud:<id36>:<action>\n// - Else -> build preset budget range buttons budget:<code>\nfunction toBase36Id(x) {\n  const s = String(x ?? \"\").trim();\n  const n = Number(s);\n  if (Number.isInteger(n) && n >= 0) return n.toString(36);\n  let acc = 0;\n  for (let i = 0; i < s.length; i++) acc = ((acc << 5) - acc) + s.charCodeAt(i);\n  acc = Math.abs(acc) >>> 0;\n  return acc.toString(36);\n}\nconst j = (items[0] && items[0].json) ? items[0].json : {};\nconst hasBudgetId = j.budget_id != null || j.presupuesto_id != null || j.id != null;\n\nlet reply_markup;\nif (hasBudgetId) {\n  const budgetId = j.budget_id ?? j.presupuesto_id ?? j.id;\n  const allowed = [\"view\",\"pdf\",\"accept\",\"reject\"];\n  let actions = Array.isArray(j.actions) && j.actions.length ? j.actions : allowed;\n  actions = actions.filter(a => allowed.includes(a));\n  const id36 = toBase36Id(budgetId);\n  const rows = [];\n  function label(a){ return a===\"view\"?\"Ver\":a===\"pdf\"?\"PDF\":a===\"accept\"?\"Aceptar\":a===\"reject\"?\"Rechazar\":a; }\n  for (let k = 0; k < actions.length; k += 2) {\n    const row = [];\n    for (let h = k; h < Math.min(k+2, actions.length); h++) {\n      const act = actions[h];\n      row.push({ text: label(act), callback_data: `bud:${id36}:${act}` });\n    }\n    rows.push(row);\n  }\n  reply_markup = { inline_keyboard: rows };\n  return [{ json: { ...j, reply_markup, keyboard_built: true, budget_id_base36: id36, budget_id_raw: budgetId } }];\n}\n\n// No budget_id: build preset BUDGET RANGE keyboard\nconst ranges = j.budget_ranges && Array.isArray(j.budget_ranges) ? j.budget_ranges : [\n  {label:\"0 - 200M\", code:\"r:0-200\"},\n  {label:\"200 - 400M\", code:\"r:200-400\"},\n  {label:\"400 - 600M\", code:\"r:400-600\"},\n  {label:\"Otro presupuesto\", code:\"other\"},\n  {label:\"Cambiar ciudad\", code:\"change_city\"},\n  {label:\"Inicio\", code:\"home\"}\n];\nconst rows = [];\nfor (let i=0; i<ranges.length; i+=3) { // up to 3 per row for compact view\n  const row = [];\n  for (let k=i; k<Math.min(i+3, ranges.length); k++) {\n    const r = ranges[k];\n    // callback_data canonical: budget:<code>, keep it <=64 bytes\n    row.push({ text: r.label, callback_data: `budget:${r.code}` });\n  }\n  rows.push(row);\n}\nreply_markup = { inline_keyboard: rows };\nreturn [{ json: { ...j, reply_markup, keyboard_built: true } }];\n"
+      },
+      "id": "ab8517f0-fb7b-48c8-a006-e8c612b5f348",
+      "name": "BuildBudgetKeyboard → Send a text message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        1360
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "49b2a92c-8609-41b5-bb5b-b864322eeda2",
+              "leftValue": "={{$json.throttled === true}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -3344,
+        664
+      ],
+      "id": "fb6239b0-09c6-4dc3-b7e2-a10878372f79",
+      "name": "IF throttled?"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "660ffc7c-8ae4-4a20-b969-9cdbda7a1669",
+              "leftValue": "={{$json.isCallback === true}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -3120,
+        760
+      ],
+      "id": "383c66d0-4ccb-4d05-ae74-e12e64c7f19d",
+      "name": "IF isCallback (throttle)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// BuildBudgetKeyboard (tolerant)\n// - If budget_id present -> build action buttons bud:<id36>:<action>\n// - Else -> build preset budget range buttons budget:<code>\nfunction toBase36Id(x) {\n  const s = String(x ?? \"\").trim();\n  const n = Number(s);\n  if (Number.isInteger(n) && n >= 0) return n.toString(36);\n  let acc = 0;\n  for (let i = 0; i < s.length; i++) acc = ((acc << 5) - acc) + s.charCodeAt(i);\n  acc = Math.abs(acc) >>> 0;\n  return acc.toString(36);\n}\nconst j = (items[0] && items[0].json) ? items[0].json : {};\nconst hasBudgetId = j.budget_id != null || j.presupuesto_id != null || j.id != null;\n\nlet reply_markup;\nif (hasBudgetId) {\n  const budgetId = j.budget_id ?? j.presupuesto_id ?? j.id;\n  const allowed = [\"view\",\"pdf\",\"accept\",\"reject\"];\n  let actions = Array.isArray(j.actions) && j.actions.length ? j.actions : allowed;\n  actions = actions.filter(a => allowed.includes(a));\n  const id36 = toBase36Id(budgetId);\n  const rows = [];\n  function label(a){ return a===\"view\"?\"Ver\":a===\"pdf\"?\"PDF\":a===\"accept\"?\"Aceptar\":a===\"reject\"?\"Rechazar\":a; }\n  for (let k = 0; k < actions.length; k += 2) {\n    const row = [];\n    for (let h = k; h < Math.min(k+2, actions.length); h++) {\n      const act = actions[h];\n      row.push({ text: label(act), callback_data: `bud:${id36}:${act}` });\n    }\n    rows.push(row);\n  }\n  reply_markup = { inline_keyboard: rows };\n  return [{ json: { ...j, reply_markup, keyboard_built: true, budget_id_base36: id36, budget_id_raw: budgetId } }];\n}\n\n// No budget_id: build preset BUDGET RANGE keyboard\nconst ranges = j.budget_ranges && Array.isArray(j.budget_ranges) ? j.budget_ranges : [\n  {label:\"0 - 200M\", code:\"r:0-200\"},\n  {label:\"200 - 400M\", code:\"r:200-400\"},\n  {label:\"400 - 600M\", code:\"r:400-600\"},\n  {label:\"Otro presupuesto\", code:\"other\"},\n  {label:\"Cambiar ciudad\", code:\"change_city\"},\n  {label:\"Inicio\", code:\"home\"}\n];\nconst rows = [];\nfor (let i=0; i<ranges.length; i+=3) { // up to 3 per row for compact view\n  const row = [];\n  for (let k=i; k<Math.min(i+3, ranges.length); k++) {\n    const r = ranges[k];\n    // callback_data canonical: budget:<code>, keep it <=64 bytes\n    row.push({ text: r.label, callback_data: `budget:${r.code}` });\n  }\n  rows.push(row);\n}\nreply_markup = { inline_keyboard: rows };\nreturn [{ json: { ...j, reply_markup, keyboard_built: true } }];\n"
+      },
+      "id": "fa4eabd6-1145-43f1-a99b-ca9d923a6117",
+      "name": "Build Presupuesto Keyboard → Send a text message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        144,
+        1360
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// BuildBudgetKeyboard (tolerant)\n// - If budget_id present -> build action buttons bud:<id36>:<action>\n// - Else -> build preset budget range buttons budget:<code>\nfunction toBase36Id(x) {\n  const s = String(x ?? \"\").trim();\n  const n = Number(s);\n  if (Number.isInteger(n) && n >= 0) return n.toString(36);\n  let acc = 0;\n  for (let i = 0; i < s.length; i++) acc = ((acc << 5) - acc) + s.charCodeAt(i);\n  acc = Math.abs(acc) >>> 0;\n  return acc.toString(36);\n}\nconst j = (items[0] && items[0].json) ? items[0].json : {};\nconst hasBudgetId = j.budget_id != null || j.presupuesto_id != null || j.id != null;\n\nlet reply_markup;\nif (hasBudgetId) {\n  const budgetId = j.budget_id ?? j.presupuesto_id ?? j.id;\n  const allowed = [\"view\",\"pdf\",\"accept\",\"reject\"];\n  let actions = Array.isArray(j.actions) && j.actions.length ? j.actions : allowed;\n  actions = actions.filter(a => allowed.includes(a));\n  const id36 = toBase36Id(budgetId);\n  const rows = [];\n  function label(a){ return a===\"view\"?\"Ver\":a===\"pdf\"?\"PDF\":a===\"accept\"?\"Aceptar\":a===\"reject\"?\"Rechazar\":a; }\n  for (let k = 0; k < actions.length; k += 2) {\n    const row = [];\n    for (let h = k; h < Math.min(k+2, actions.length); h++) {\n      const act = actions[h];\n      row.push({ text: label(act), callback_data: `bud:${id36}:${act}` });\n    }\n    rows.push(row);\n  }\n  reply_markup = { inline_keyboard: rows };\n  return [{ json: { ...j, reply_markup, keyboard_built: true, budget_id_base36: id36, budget_id_raw: budgetId } }];\n}\n\n// No budget_id: build preset BUDGET RANGE keyboard\nconst ranges = j.budget_ranges && Array.isArray(j.budget_ranges) ? j.budget_ranges : [\n  {label:\"0 - 200M\", code:\"r:0-200\"},\n  {label:\"200 - 400M\", code:\"r:200-400\"},\n  {label:\"400 - 600M\", code:\"r:400-600\"},\n  {label:\"Otro presupuesto\", code:\"other\"},\n  {label:\"Cambiar ciudad\", code:\"change_city\"},\n  {label:\"Inicio\", code:\"home\"}\n];\nconst rows = [];\nfor (let i=0; i<ranges.length; i+=3) { // up to 3 per row for compact view\n  const row = [];\n  for (let k=i; k<Math.min(i+3, ranges.length); k++) {\n    const r = ranges[k];\n    // callback_data canonical: budget:<code>, keep it <=64 bytes\n    row.push({ text: r.label, callback_data: `budget:${r.code}` });\n  }\n  rows.push(row);\n}\nreply_markup = { inline_keyboard: rows };\nreturn [{ json: { ...j, reply_markup, keyboard_built: true } }];\n"
+      },
+      "id": "b873dc25-2ab2-4223-be96-d6b8c8905d93",
+      "name": "Build Presupuesto Keyboard → Edit a text message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        144,
+        1168
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "editMessageText",
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "messageId": "={{$node[\"Normalize\"].json.message_id}}",
+        "replyMarkup": "inlineKeyboard",
+        "text": "elige o escribe tu presupuesto",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "0 - 200M",
+                    "additionalFields": {}
+                  },
+                  {
+                    "text": "200 - 400M",
+                    "additionalFields": {}
+                  },
+                  {
+                    "text": "400 - 600M",
+                    "additionalFields": {}
+                  },
+                  {
+                    "text": "otro presupuesto",
+                    "additionalFields": {}
+                  },
+                  {
+                    "text": "cambiar ciudad",
+                    "additionalFields": {}
+                  },
+                  {
+                    "text": "inicio",
+                    "additionalFields": {}
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        592,
+        1168
+      ],
+      "id": "6642f239-a9ff-4437-9290-b769a2c9dcf4",
+      "name": "Edit a text message1",
+      "webhookId": "5642718f-bbec-4021-825b-2fc5c248d148",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "text": "=elige o escribe tu presupuesto",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "0 - 200M",
+                    "additionalFields": {
+                      "callback_data": "=entre 0 y 200 millones"
+                    }
+                  },
+                  {
+                    "text": "200 - 400M",
+                    "additionalFields": {
+                      "callback_data": "=entre 200 y 400 milliones"
+                    }
+                  },
+                  {
+                    "text": "400 - 600M",
+                    "additionalFields": {
+                      "callback_data": "=entre 400 y 600 millones"
+                    }
+                  },
+                  {
+                    "text": "otro presupuesto ",
+                    "additionalFields": {
+                      "callback_data": "=presupuesto superior a 600 millones"
+                    }
+                  },
+                  {
+                    "text": "cambiar ciudad",
+                    "additionalFields": {
+                      "callback_data": "buscar_tipo_"
+                    }
+                  },
+                  {
+                    "text": "inicio",
+                    "additionalFields": {
+                      "callback_data": "=menu"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        592,
+        1360
+      ],
+      "id": "1cc41e70-a726-40d4-9170-4ecdfeaf2f0a",
+      "name": "Send a text message",
+      "webhookId": "154bd174-905c-4402-8d96-2afbcb42cb5f",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Budget Selection -> {route, code, min, max}\nconst raw = $node[\"Normalize\"].json.text || \"\"; // ej: budget:r:200-400, budget:other, budget:change_city\nconst m = /^budget:(r:(\\d+)-(\\d+)|other|change_city|home)$/.exec(raw);\nif (!m) {\n  return [{ json: { route: \"invalid\", raw } }];\n}\nconst code = m[1];\nlet route = \"ok\";\nlet min = null, max = null;\nif (code === \"other\") route = \"other\";\nelse if (code === \"change_city\") route = \"change_city\";\nelse if (code === \"home\") route = \"home\";\nelse {\n  min = Number(m[2]);\n  max = Number(m[3]);\n}\nreturn [{ json: { route, code, min, max } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -976,
+        1280
+      ],
+      "id": "e56a9506-75ad-441e-be92-333fb6d13640",
+      "name": "Parse Budget Selection"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO public.event_log (lead_id, evento, payload)\nVALUES ($1::uuid, 'await_budget', jsonb_build_object('budget_code',$2::text,'min',$3::int,'max',$4::int));",
+        "options": {
+          "queryReplacement": "={{$node[\"Upsert Lead\"].json.id}}, {{$node[\"Parse Budget Selection\"].json.code}}, {{$node[\"Parse Budget Selection\"].json.min}}, {{$node[\"Parse Budget Selection\"].json.max}}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -752,
+        1280
+      ],
+      "id": "607fcc6b-06fc-405f-b14b-dc383f60486e",
+      "name": "Set Await Budget",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$node[\"Parse Budget Selection\"].json.route}}",
+                    "rightValue": "change_city",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "r1"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$node[\"Parse Budget Selection\"].json.route}}",
+                    "rightValue": "home",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "r2"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$node[\"Parse Budget Selection\"].json.route}}",
+                    "rightValue": "other",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "r3"
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        -528,
+        1264
+      ],
+      "id": "3bb90ef2-13ea-4507-ab4a-f7f443b8de16",
+      "name": "Route After Budget"
+    },
+    {
+      "parameters": {
+        "operation": "editMessageText",
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "messageId": "={{$node[\"Normalize\"].json.message_id}}",
+        "replyMarkup": "inlineKeyboard",
+        "text": "*¿Cuántas habitaciones buscas?*",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "1",
+                    "additionalFields": {
+                      "callback_data": "bedrooms:1"
+                    }
+                  },
+                  {
+                    "text": "2",
+                    "additionalFields": {
+                      "callback_data": "bedrooms:2"
+                    }
+                  },
+                  {
+                    "text": "3",
+                    "additionalFields": {
+                      "callback_data": "bedrooms:3"
+                    }
+                  },
+                  {
+                    "text": "4+",
+                    "additionalFields": {
+                      "callback_data": "bedrooms:4plus"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "⬅️ Cambiar ciudad",
+                    "additionalFields": {
+                      "callback_data": "menu_buscar"
+                    }
+                  },
+                  {
+                    "text": "🏠 Inicio",
+                    "additionalFields": {
+                      "callback_data": "menu_inicio"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        816,
+        1840
+      ],
+      "id": "40e47c36-4474-4736-940f-51010b46958a",
+      "name": "Edit Ask Bedrooms",
+      "webhookId": "f2d64119-9c1e-4c2a-9e44-0a9bbed1bed1",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "throttled-true",
+              "leftValue": "={{$json.throttled === true}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -3344,
+        304
+      ],
+      "id": "d66cf657-b982-4a42-8e75-c028b194d65c",
+      "name": "IF Throttled"
+    },
+    {
+      "parameters": {
+        "resource": "callback",
+        "queryId": "$json.callback_query_id",
+        "additionalFields": {
+          "show_alert": false,
+          "text": "⏳"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -2896,
+        304
+      ],
+      "id": "7861a487-52f4-48e2-88bc-7e346bcd6421",
+      "name": "AnswerCallback (⏳)",
+      "webhookId": "autogen-acq",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "is-callback-true",
+              "leftValue": "={{$json.isCallback === true}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -3120,
+        304
+      ],
+      "id": "b85c5b02-32f5-4644-975e-e80fa6d78606",
+      "name": "IF Throttled isCallback?"
+    },
+    {
+      "parameters": {
+        "jsCode": "const txt = $node[\"Normalize\"].json.text || \"\";\nconst out = { precio_min: null, precio_max: null, accion: null };\nif (txt.startsWith(\"presu_\")) {\n  const code = txt.slice(\"presu_\".length);\n  if (code === \"cambiar_ciudad\") out.accion = \"cambiar_ciudad\";\n  else if (code === \"mas_600\") { out.precio_min = 600_000_000; out.precio_max = null; }\n  else {\n    const [lo, hi] = code.split(\"_\").map(n => parseInt(n, 10));\n    out.precio_min = lo * 1_000_000;\n    out.precio_max = hi * 1_000_000;\n  }\n}\nreturn [{ json: out }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -752,
+        -536
+      ],
+      "id": "5e0a2505-110d-4033-9add-596c9451f224",
+      "name": "Parse Presupuesto"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.accion === \"cambiar_ciudad\"}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -528,
+        -536
+      ],
+      "id": "578be1d7-7a15-47cd-9da6-f2c53e362ebe",
+      "name": "IF Cambiar Ciudad"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH lead AS (\n  SELECT id AS lead_id FROM public.leads WHERE chat_id = $1 AND canal='telegram'\n),\ncity_ctx AS (\n  SELECT (payload->>'city_id')::bigint AS city_id\n  FROM public.event_log e\n  JOIN lead l ON l.lead_id = e.lead_id\n  WHERE e.evento IN ('await_city','selected_city')\n  ORDER BY e.created_at DESC\n  LIMIT 1\n),\ntype_ctx AS (\n  SELECT (payload->>'asset_type')::int AS asset_type\n  FROM public.event_log e\n  JOIN lead l ON l.lead_id = e.lead_id\n  WHERE e.evento = 'await_city'\n  ORDER BY e.created_at DESC\n  LIMIT 1\n)\nSELECT property_id, titulo, ciudad, precio_actual, status_txt, fecha_fin\nFROM public.properties_view\nWHERE status_txt = 'activa'\n  AND ($2::bigint IS NULL OR precio_actual >= $2)\n  AND ($3::bigint IS NULL OR precio_actual <= $3)\n  AND ((SELECT city_id FROM city_ctx) IS NULL OR city_id = (SELECT city_id FROM city_ctx))\n  AND ((SELECT asset_type FROM type_ctx) IS NULL OR asset_type = (SELECT asset_type FROM type_ctx))\nORDER BY fecha_fin ASC NULLS LAST, updated_at DESC\nLIMIT 5;\n",
+        "options": {
+          "queryReplacement": "[ $node[\"Normalize\"].json.chat_id, $json.precio_min, $json.precio_max ]"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -80,
+        -464
+      ],
+      "id": "39ff5433-8158-4341-87fb-0b45ec78e553",
+      "name": "query top5 (presu)",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const m = ($node[\"Normalize\"].json.text || \"\").match(/^menu_seguir_(\\d+)$/);\nreturn [{ json: { asset_id: m ? parseInt(m[1],10) : null } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -976,
+        -80
+      ],
+      "id": "3162fa4f-7d50-4115-a24a-1d12bc652be6",
+      "name": "Parse Seguir"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.asset_id !== null}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -752,
+        -80
+      ],
+      "id": "7b3f6197-edbc-4e4f-8f2d-1896dd75eea0",
+      "name": "IF asset_id válido"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO public.asset_follow (chat_id, asset_id, created_at, active)\nVALUES ($1, $2, NOW(), TRUE)\nON CONFLICT (chat_id, asset_id)\nDO UPDATE SET active = TRUE, created_at = EXCLUDED.created_at;\n",
+        "options": {
+          "queryReplacement": "[ $node[\"Normalize\"].json.chat_id, $json.asset_id ]"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -528,
+        -176
+      ],
+      "id": "e814b955-b9f3-427d-b083-f71cc2253967",
+      "name": "Upsert asset_follow",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "text": "⭐ Inmueble agregado a tu lista de seguidos. Te avisaré si hay cambios relevantes.",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -304,
+        -176
+      ],
+      "id": "819fa269-9616-4595-b57c-e5a149d5ae45",
+      "name": "Send Follow OK",
+      "webhookId": "autogen-followok",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "text": "No pude identificar el inmueble. Vuelve a intentarlo desde el detalle.",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -528,
+        16
+      ],
+      "id": "cf8967bd-22de-47c4-9c70-3fecb9f4f11d",
+      "name": "Send Follow Error",
+      "webhookId": "autogen-followerr",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const nz = x => (x==null || x==='') ? null : x;\nconst chat = $node[\"Normalize\"].json;\nreturn [{ json: {\n  chat_id: chat.chat_id,\n  username: nz(chat.username),\n  first_name: nz(chat.first_name),\n  last_name: nz(chat.last_name),\n  phone: nz(chat.phone),\n  ultimo_asset_id: null\n}}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -976,
+        400
+      ],
+      "id": "2602c68b-6e8d-4c67-9340-c264477a6585",
+      "name": "Build Payload Asesor"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO public.event_log (lead_id, evento, payload)\nVALUES (\n  (SELECT id FROM public.leads WHERE chat_id=$1 AND canal='telegram'),\n  'contacto_asesor',\n  jsonb_build_object(\n    'username',$2,'first_name',$3,'last_name',$4,'phone',$5,'ultimo_asset_id',$6\n  )\n);\n",
+        "options": {
+          "queryReplacement": "[ $json.chat_id, $json.username, $json.first_name, $json.last_name, $json.phone, $json.ultimo_asset_id ]"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -752,
+        400
+      ],
+      "id": "149b6247-409c-445d-ba4e-a83b92d00a87",
+      "name": "Insert contacto asesor",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "text": "Un asesor se pondrá en contacto contigo en breve. ¿Prefieres mañana por la mañana o por la tarde?",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "Mañana (AM)",
+                    "additionalFields": {
+                      "callback_data": "asesor_mañana_am"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "Mañana (PM)",
+                    "additionalFields": {
+                      "callback_data": "asesor_mañana_pm"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "⬅️ Volver al inicio",
+                    "additionalFields": {
+                      "callback_data": "menu_inicio"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "Markdown"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -528,
+        400
+      ],
+      "id": "bc22ea69-9573-4a96-8158-07d6e11a4c15",
+      "name": "Send Asesor Confirm",
+      "webhookId": "autogen-asesor",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const txt = $node[\"Normalize\"].json.text || \"\";\nconst slot = txt.startsWith(\"asesor_\") ? txt.slice(\"asesor_\".length) : null;\nreturn [{ json: { slot } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -976,
+        208
+      ],
+      "id": "141f09fe-519b-479a-8801-b9d602a2e7ab",
+      "name": "Parse Asesor Preferencia"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO public.event_log (lead_id, evento, payload)\nVALUES (\n  (SELECT id FROM public.leads WHERE chat_id=$1 AND canal='telegram'),\n  'asesor_preferencia',\n  jsonb_build_object('slot',$2)\n);\n",
+        "options": {
+          "queryReplacement": "[ $node[\"Normalize\"].json.chat_id, $json.slot ]"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -752,
+        208
+      ],
+      "id": "044bb828-c5b9-44f7-963e-17233f8103fd",
+      "name": "Insert asesor preferencia",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "text": "Perfecto, apunto tu preferencia de horario. Te contactaremos pronto.",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -528,
+        208
+      ],
+      "id": "e88cc80f-5906-49fc-b5ce-9a025b436453",
+      "name": "Send Preferencia OK",
+      "webhookId": "autogen-prefok",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO public.event_log (lead_id, evento, payload, created_at)\nVALUES (\n  (SELECT id FROM public.leads WHERE chat_id=$1 AND canal='telegram'),\n  'await_budget',\n  jsonb_build_object('await','budget'),\n  NOW()\n);\n",
+        "options": {
+          "queryReplacement": "[ $node[\"Normalize\"].json.chat_id ]"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        368,
+        1168
+      ],
+      "id": "89831df8-73c7-4839-bedb-155a1cb666b1",
+      "name": "Set await_budget → Edit a text message1",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO public.event_log (lead_id, evento, payload, created_at)\nVALUES (\n  (SELECT id FROM public.leads WHERE chat_id=$1 AND canal='telegram'),\n  'await_budget',\n  jsonb_build_object('await','budget'),\n  NOW()\n);\n",
+        "options": {
+          "queryReplacement": "[ $node[\"Normalize\"].json.chat_id ]"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        368,
+        1360
+      ],
+      "id": "ad765a64-0a76-4d88-a177-5fb51c530b48",
+      "name": "Set await_budget → Send a text message",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT 1\nFROM public.event_log\nWHERE lead_id = (SELECT id FROM public.leads WHERE chat_id=$1 AND canal='telegram')\n  AND evento = 'await_budget'\nORDER BY created_at DESC\nLIMIT 1;\n",
+        "options": {
+          "queryReplacement": "[ $node[\"Normalize\"].json.chat_id ]"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -80,
+        1648
+      ],
+      "id": "94a1902f-c9ab-4591-98ff-01a9364f1526",
+      "name": "Check await_budget",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$items.length > 0}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        144,
+        1648
+      ],
+      "id": "1001dda3-3150-4575-86e0-18bb9c064da7",
+      "name": "IF await_budget?"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        368,
+        1552
+      ],
+      "id": "5c5160f1-07ba-4185-81e7-dffbefac017c",
+      "name": "End (await budget)"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM public.event_log\nWHERE lead_id = (SELECT id FROM public.leads WHERE chat_id=$1 AND canal='telegram')\n  AND evento = 'await_budget';\n",
+        "options": {
+          "queryReplacement": "[ $node[\"Normalize\"].json.chat_id ]"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -976,
+        -536
+      ],
+      "id": "07223e1c-20c9-4db3-8646-7d5c11ac469d",
+      "name": "Clear await_budget",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO public.event_log (lead_id, evento, payload, created_at)\nVALUES (\n  (SELECT id FROM public.leads WHERE chat_id=$1 AND canal='telegram'),\n  'selected_budget',\n  jsonb_build_object('precio_min',$2,'precio_max',$3),\n  NOW()\n);\n",
+        "options": {
+          "queryReplacement": "[ $node[\"Normalize\"].json.chat_id, $json.precio_min, $json.precio_max ]"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -304,
+        -536
+      ],
+      "id": "7e4df122-71a7-4dae-b05d-91681c6e3688",
+      "name": "Log selected_budget",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT (payload->>'precio_min')::bigint AS precio_min,\n       (payload->>'precio_max')::bigint AS precio_max\nFROM public.event_log\nWHERE lead_id = (SELECT id FROM public.leads WHERE chat_id=$1 AND canal='telegram')\n  AND evento = 'selected_budget'\nORDER BY created_at DESC\nLIMIT 1;\n",
+        "options": {
+          "queryReplacement": "[ $node[\"Normalize\"].json.chat_id ]"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        144,
+        -688
+      ],
+      "id": "4368aea0-387e-4b46-8001-68d1dcf2a78e",
+      "name": "Check selected_budget",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$items.length === 0}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        368,
+        -688
+      ],
+      "id": "9e1c1296-14f8-45f5-b66b-a9c3d1dd25c9",
+      "name": "IF need budget?"
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "text": "*Elige o escribe tu presupuesto*",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "0 - 200M",
+                    "additionalFields": {
+                      "callback_data": "presu_0_200"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "200 - 400M",
+                    "additionalFields": {
+                      "callback_data": "presu_200_400"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "400 - 600M",
+                    "additionalFields": {
+                      "callback_data": "presu_400_600"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "Más de 600M",
+                    "additionalFields": {
+                      "callback_data": "presu_mas_600"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "Cambiar ciudad",
+                    "additionalFields": {
+                      "callback_data": "presu_cambiar_ciudad"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "⬅️ Inicio",
+                    "additionalFields": {
+                      "callback_data": "menu_inicio"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "Markdown"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        816,
+        -688
+      ],
+      "id": "aaa04d24-6a60-4fc9-a26a-f093e38e26bb",
+      "name": "Send Presupuesto (pre-list)",
+      "webhookId": "autogen-budget-prelist",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO public.event_log (lead_id, evento, payload, created_at)\nVALUES (\n  (SELECT id FROM public.leads WHERE chat_id=$1 AND canal='telegram'),\n  'await_budget',\n  jsonb_build_object('await','budget'),\n  NOW()\n);\n",
+        "options": {
+          "queryReplacement": "[ $node[\"Normalize\"].json.chat_id ]"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        592,
+        -688
+      ],
+      "id": "4a08dc31-3bf4-4c1e-9d57-9c7b3b8d0d40",
+      "name": "Set await_budget (pre-list)",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO public.event_log (lead_id, evento, payload, created_at)\nVALUES (\n  (SELECT id FROM public.leads WHERE chat_id=$1 AND canal='telegram'),\n  'await_rooms',\n  jsonb_build_object('await','rooms'),\n  NOW()\n);\n",
+        "options": {
+          "queryReplacement": "[ $node[\"Normalize\"].json.chat_id ]"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -80,
+        -272
+      ],
+      "id": "1052c1cc-13f4-41e5-a360-e37fb2a2d72d",
+      "name": "Set await_rooms",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
+        "text": "¿Cuántas habitaciones buscas?",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "1",
+                    "additionalFields": {
+                      "callback_data": "rooms_1"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "2",
+                    "additionalFields": {
+                      "callback_data": "rooms_2"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "3",
+                    "additionalFields": {
+                      "callback_data": "rooms_3"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "4+",
+                    "additionalFields": {
+                      "callback_data": "rooms_4p"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "⬅️ Cambiar ciudad",
+                    "additionalFields": {
+                      "callback_data": "presu_cambiar_ciudad"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "🏠 Inicio",
+                    "additionalFields": {
+                      "callback_data": "menu_inicio"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        144,
+        176
+      ],
+      "id": "84758acb-b579-44ea-b757-0b8e97c99d0a",
+      "name": "Send Habitaciones (post-budget)",
+      "webhookId": "autogen-rooms-post",
+      "credentials": {
+        "telegramApi": {
+          "id": "9eH4wFEASxTZxiQA",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const txt = $node[\"Normalize\"].json.text || \"\";\nlet rooms = null;\nconst m = txt.match(/^rooms_(\\d+|4p)$/);\nif (m) rooms = m[1] === '4p' ? 4 : parseInt(m[1],10);\nreturn [{ json: { rooms } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -528,
+        592
+      ],
+      "id": "a9b4c367-6bd5-4e0e-877f-0da532bf08b8",
+      "name": "Parse Rooms"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM public.event_log\nWHERE lead_id = (SELECT id FROM public.leads WHERE chat_id=$1 AND canal='telegram')\n  AND evento = 'await_rooms';\n",
+        "options": {
+          "queryReplacement": "[ $node[\"Normalize\"].json.chat_id ]"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -304,
+        592
+      ],
+      "id": "e993fdeb-f86a-407c-a9eb-3636c45723bd",
+      "name": "Clear await_rooms",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO public.event_log (lead_id, evento, payload, created_at)\nVALUES (\n  (SELECT id FROM public.leads WHERE chat_id=$1 AND canal='telegram'),\n  'selected_rooms',\n  jsonb_build_object('rooms',$2),\n  NOW()\n);\n",
+        "options": {
+          "queryReplacement": "[ $node[\"Normalize\"].json.chat_id, $json.rooms ]"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -80,
+        592
+      ],
+      "id": "abbb79d2-45d0-4877-b413-0d0dbc72525b",
+      "name": "Log selected_rooms",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT 1\nFROM public.event_log\nWHERE lead_id = (SELECT id FROM public.leads WHERE chat_id=$1 AND canal='telegram')\n  AND (evento = 'await_budget' OR evento = 'await_rooms')\nORDER BY created_at DESC\nLIMIT 1;\n",
+        "options": {
+          "queryReplacement": "[ $node[\"Normalize\"].json.chat_id ]"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        368,
+        1744
+      ],
+      "id": "c1e512ff-9117-405e-b79e-61c3bb8e49da",
+      "name": "Check await any (budget/rooms)",
+      "credentials": {
+        "postgres": {
+          "id": "9rHKzpOUWi4SJorX",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$items.length > 0}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        592,
+        1744
+      ],
+      "id": "33d44e9b-71e8-4d8a-838c-25f00b1585ab",
+      "name": "IF await any?"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        816,
+        1168
+      ],
+      "id": "517b593f-3bb6-47dc-b531-5386c7bca477",
+      "name": "End (await any)"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize": {
+      "main": [
+        [
+          {
+            "node": "Check Last Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Last Event": {
+      "main": [
+        [
+          {
+            "node": "Throttle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Throttle": {
+      "main": [
+        [
+          {
+            "node": "IF throttled?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "IF Throttled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "AnswerCallback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Upsert Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AnswerCallback": {
+      "main": [
+        [
+          {
+            "node": "Upsert Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Lead": {
+      "main": [
+        [
+          {
+            "node": "Log Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Event": {
+      "main": [
+        [
+          {
+            "node": "IF to LLM (not callback)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF menu_*": {
+      "main": [
+        [
+          {
+            "node": "Switch menu",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF edit_or_send (Menu)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch menu": {
+      "main": [
+        [
+          {
+            "node": "IF edit_or_send (Menu)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "query top5",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Query Detalle",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Query Tipos",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Set Await City",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Validate City & Count Assets",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Parse Budget Selection",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [],
+        [
+          {
+            "node": "Clear await_budget",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Parse Seguir",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Payload Asesor",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Parse Asesor Preferencia",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Parse Rooms",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF edit_or_send (Menu)": {
+      "main": [
+        [
+          {
+            "node": "BuildBudgetKeyboard → Edit Menu",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "BuildBudgetKeyboard → Send Menu",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "query top5": {
+      "main": [
+        [
+          {
+            "node": "Check selected_budget",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Keyboard Top5": {
+      "main": [
+        [
+          {
+            "node": "IF  edit _or_send (top5)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF  edit _or_send (top5)": {
+      "main": [
+        [
+          {
+            "node": "BuildBudgetKeyboard → Edit top5",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "BuildBudgetKeyboard → send top5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Detalle": {
+      "main": [
+        [
+          {
+            "node": "Build Detalle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Detalle": {
+      "main": [
+        [
+          {
+            "node": "IF edit_or_send (detalle)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF edit_or_send (detalle)": {
+      "main": [
+        [
+          {
+            "node": "BuildBudgetKeyboard → Edit detalle",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "BuildBudgetKeyboard → Send Detalle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Tipos": {
+      "main": [
+        [
+          {
+            "node": "Build Keyboard Tipos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Keyboard Tipos": {
+      "main": [
+        [
+          {
+            "node": "IF edit_or_send (buscar tipo)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF edit_or_send (buscar tipo)": {
+      "main": [
+        [
+          {
+            "node": "BuildBudgetKeyboard → Edit Buscar Tipo",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "BuildBudgetKeyboard → Send Buscar Tipo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Await City": {
+      "main": [
+        [
+          {
+            "node": "Ask City",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Keyboard Ciudad": {
+      "main": [
+        [
+          {
+            "node": "BuildBudgetKeyboard → Send city choices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF to LLM (not callback)": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF menu_*",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Intent": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "IF edit_or_send (Menu)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Validate City & Count Assets",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Switch menu",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate City & Count Assets": {
+      "main": [
+        [
+          {
+            "node": "varias ciudades",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "varias ciudades": {
+      "main": [
+        [
+          {
+            "node": "Build Keyboard Ciudad",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ciudad no detectada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ciudad no detectada": {
+      "main": [
+        [
+          {
+            "node": "IF send_or_edit (presupuesto)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF send_or_edit (presupuesto)": {
+      "main": [
+        [
+          {
+            "node": "BuildBudgetKeyboard → Edit a text message",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check await_budget",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "BuildBudgetKeyboard → Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildBudgetKeyboard → Send Menu": {
+      "main": [
+        [
+          {
+            "node": "Send Menu",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildBudgetKeyboard → Edit Menu": {
+      "main": [
+        [
+          {
+            "node": "Edit Menu",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildBudgetKeyboard → Edit top5": {
+      "main": [
+        [
+          {
+            "node": "Edit top5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildBudgetKeyboard → send top5": {
+      "main": [
+        [
+          {
+            "node": "send top5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildBudgetKeyboard → Send Detalle": {
+      "main": [
+        [
+          {
+            "node": "Send Detalle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildBudgetKeyboard → Edit detalle": {
+      "main": [
+        [
+          {
+            "node": "Edit detalle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildBudgetKeyboard → Send Buscar Tipo": {
+      "main": [
+        [
+          {
+            "node": "Send Buscar Tipo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildBudgetKeyboard → Edit Buscar Tipo": {
+      "main": [
+        [
+          {
+            "node": "Edit Buscar Tipo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildBudgetKeyboard → Send city choices": {
+      "main": [
+        [
+          {
+            "node": "Send city choices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildBudgetKeyboard → Edit a text message": {
+      "main": [
+        [
+          {
+            "node": "Build Presupuesto Keyboard → Edit a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildBudgetKeyboard → Send a text message": {
+      "main": [
+        [
+          {
+            "node": "Build Presupuesto Keyboard → Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF throttled?": {
+      "main": [
+        [
+          {
+            "node": "IF isCallback (throttle)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Presupuesto Keyboard → Send a text message": {
+      "main": [
+        [
+          {
+            "node": "Set await_budget → Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Presupuesto Keyboard → Edit a text message": {
+      "main": [
+        [
+          {
+            "node": "Set await_budget → Edit a text message1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Budget Selection": {
+      "main": [
+        [
+          {
+            "node": "Set Await Budget",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Await Budget": {
+      "main": [
+        [
+          {
+            "node": "Route After Budget",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route After Budget": {
+      "main": [
+        [
+          {
+            "node": "IF send_or_edit (presupuesto)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Query Tipos",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF edit_or_send (Menu)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Throttled": {
+      "main": [
+        [
+          {
+            "node": "IF Throttled isCallback?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Throttled isCallback?": {
+      "main": [
+        [
+          {
+            "node": "AnswerCallback (⏳)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Presupuesto": {
+      "main": [
+        [
+          {
+            "node": "IF Cambiar Ciudad",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Cambiar Ciudad": {
+      "main": [
+        [
+          {
+            "node": "Ask City",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "query top5 (presu)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log selected_budget",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "query top5 (presu)": {
+      "main": [
+        [
+          {
+            "node": "Check selected_budget",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Seguir": {
+      "main": [
+        [
+          {
+            "node": "IF asset_id válido",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF asset_id válido": {
+      "main": [
+        [
+          {
+            "node": "Upsert asset_follow",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Follow Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert asset_follow": {
+      "main": [
+        [
+          {
+            "node": "Send Follow OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Payload Asesor": {
+      "main": [
+        [
+          {
+            "node": "Insert contacto asesor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert contacto asesor": {
+      "main": [
+        [
+          {
+            "node": "Send Asesor Confirm",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Asesor Preferencia": {
+      "main": [
+        [
+          {
+            "node": "Insert asesor preferencia",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert asesor preferencia": {
+      "main": [
+        [
+          {
+            "node": "Send Preferencia OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set await_budget → Edit a text message1": {
+      "main": [
+        [
+          {
+            "node": "Edit a text message1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set await_budget → Send a text message": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check await_budget": {
+      "main": [
+        [
+          {
+            "node": "IF await_budget?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF await_budget?": {
+      "main": [
+        [
+          {
+            "node": "End (await budget)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Check await any (budget/rooms)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear await_budget": {
+      "main": [
+        [
+          {
+            "node": "Parse Presupuesto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log selected_budget": {
+      "main": [
+        [
+          {
+            "node": "query top5 (presu)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Set await_rooms",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check selected_budget": {
+      "main": [
+        [
+          {
+            "node": "IF need budget?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF need budget?": {
+      "main": [
+        [
+          {
+            "node": "Set await_budget (pre-list)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Keyboard Top5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set await_budget (pre-list)": {
+      "main": [
+        [
+          {
+            "node": "Send Presupuesto (pre-list)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set await_rooms": {
+      "main": [
+        [
+          {
+            "node": "Send Habitaciones (post-budget)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log selected_rooms": {
+      "main": [
+        [
+          {
+            "node": "Check selected_budget",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Rooms": {
+      "main": [
+        [
+          {
+            "node": "Clear await_rooms",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear await_rooms": {
+      "main": [
+        [
+          {
+            "node": "Log selected_rooms",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check await any (budget/rooms)": {
+      "main": [
+        [
+          {
+            "node": "IF await any?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF await any?": {
+      "main": [
+        [
+          {
+            "node": "End (await any)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Edit Ask Bedrooms",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "db7286c5-d459-4cee-bd0a-d89e8cb2e409",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "0b554a4f0ee4f35e5df775fb502d334636696c4d4f5ab1e6af9968e55e7ef123"
+  },
+  "id": "4lYaeRA6b6X1oCml",
+  "tags": []
+}
