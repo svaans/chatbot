@@ -994,9 +994,14 @@
       "parameters": {
         "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
         "text": "={{$json.text}}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": "={{ $json.replyMarkup.inline_keyboard.map(row => ({ row: { buttons: row.map(btn => ({ text: btn.text, additionalFields: { callback_data: btn.callback_data } })) } })) }}"
+        },
         "additionalFields": {
           "appendAttribution": false,
-          "disable_notification": false
+          "disable_notification": false,
+          "parse_mode": "Markdown"
         }
       },
       "type": "n8n-nodes-base.telegram",
@@ -1349,8 +1354,12 @@
         "chatId": "={{$node[\"Normalize\"].json.chat_id}}",
         "text": "={{$json.text}}",
         "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": "={{ $json.replyMarkup.inline_keyboard.map(row => ({ row: { buttons: row.map(btn => ({ text: btn.text, additionalFields: { callback_data: btn.callback_data } })) } })) }}"
+        },
         "additionalFields": {
-          "appendAttribution": false
+          "appendAttribution": false,
+          "parse_mode": "Markdown"
         }
       },
       "type": "n8n-nodes-base.telegram",
